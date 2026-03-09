@@ -3,21 +3,9 @@ import SwiftData
 
 struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
-    @Environment(\.modelContext) private var modelContext
-    @State private var seedDataLoaded = SeedData.hasLoaded
-
     var body: some View {
         NavigationStack {
             Form {
-                if !seedDataLoaded {
-                    Section("Dev Tools") {
-                        Button("Load Sample Budget Data") {
-                            SeedData.loadAll(into: modelContext)
-                            seedDataLoaded = true
-                        }
-                    }
-                }
-
                 Section("Defaults") {
                     Picker("Default Period Range", selection: $viewModel.defaultRange) {
                         ForEach(DefaultRange.allCases) { range in
