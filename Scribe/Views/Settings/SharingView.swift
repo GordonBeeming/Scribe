@@ -73,6 +73,10 @@ struct SharingView: View {
                 isLoading = true
                 do {
                     try await ShareManager.shared.fetchExistingShare()
+                } catch let error as CKError where error.code == .unknownItem {
+                    // cloudkit.share record type doesn't exist yet — this is normal
+                    // before the first share is created and schema is deployed
+                    errorMessage = nil
                 } catch {
                     errorMessage = error.localizedDescription
                 }

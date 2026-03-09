@@ -46,8 +46,14 @@ final class SyncCoordinator: @unchecked Sendable {
         Task {
             do {
                 let status = try await CloudKitManager.shared.checkAccountStatus()
-                guard status == .available else {
-                    logger.warning("iCloud account not available, sync disabled")
+                logger.info("iCloud account status: \(String(describing: status))")
+                switch status {
+                case .available:
+                    break // Good to go
+                case .temporarilyUnavailable:
+                    logger.info("iCloud temporarily unavailable, proceeding anyway")
+                default:
+                    logger.warning("iCloud account not available (status: \(String(describing: status))), sync disabled")
                     await MainActor.run { syncStatus = .error("iCloud not available") }
                     return
                 }

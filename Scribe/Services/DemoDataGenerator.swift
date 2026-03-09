@@ -8,7 +8,13 @@ enum DemoDataGenerator {
         let calendar = Calendar.current
         let now = Date()
 
-        // MARK: - Family Members
+        // MARK: - Family Members (remove existing to avoid duplicates)
+
+        if let existingMembers = try? context.fetch(FetchDescriptor<FamilyMember>()) {
+            for member in existingMembers {
+                context.delete(member)
+            }
+        }
 
         let alex = FamilyMember(name: "Alex", sortOrder: 0)
         let sam = FamilyMember(name: "Sam", sortOrder: 1)
