@@ -1,0 +1,249 @@
+name: Build, Test & Deploy to TestFlight
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 26.2
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+
+      - name: Show Xcode and SDK version
+        run: |
+          xcodebuild -version
+          xcrun simctl list devices available
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build for testing
+        run: |
+          xcodebuild clean build-for-testing \
+            -project Scribe.xcodeproj \
+            -scheme Scribe \
+            -destination 'generic/platform=iOS Simulator' \
+            -quiet \
+            -skipPackagePluginValidation \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Run unit tests (iPhone)
+        run: |
+          xcodebuild test-without-building \
+            -project Scribe.xcodeproj \
+            -scheme Scribe \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -only-testing:ScribeTests \
+            -quiet
+
+      - name: Run unit tests (iPad)
+        run: |
+          xcodebuild test-without-building \
+            -project Scribe.xcodeproj \
+            -scheme Scribe \
+            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+            -only-testing:ScribeTests \
+            -quiet
+
+      - name: Archive test results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: test-results-${{ github.run_number }}
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/*/Logs/Test/*.xcresult
+          retention-days: 30
+
+  deploy-beta:
+    name: Deploy to Beta (TestFlight)
+    needs: build-and-test
+    runs-on: macos-latest
+    environment: beta
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 26.2
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Import signing certificates
+        env:
+          CERTIFICATES_P12: ${{ secrets.CERTIFICATES_P12 }}
+          CERTIFICATES_PASSWORD: ${{ secrets.CERTIFICATES_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          echo "$CERTIFICATES_P12" | base64 --decode > certificate.p12
+          security import certificate.p12 -k $KEYCHAIN_PATH -P "$CERTIFICATES_PASSWORD" -A
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          rm certificate.p12
+
+      - name: Import provisioning profiles
+        env:
+          PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
+          WIDGET_PROVISIONING_PROFILE: ${{ secrets.WIDGET_PROVISIONING_PROFILE }}
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+
+          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+          echo "$PROVISIONING_PROFILE" | base64 --decode > $PP_PATH
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+
+          WIDGET_PP_PATH=$RUNNER_TEMP/widget_pp.mobileprovision
+          echo "$WIDGET_PROVISIONING_PROFILE" | base64 --decode > $WIDGET_PP_PATH
+          cp $WIDGET_PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      - name: Set build number
+        run: |
+          BUILD_NUMBER=${{ github.run_number }}
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+
+          VERSION=$(xcodebuild -project Scribe.xcodeproj -showBuildSettings | grep MARKETING_VERSION | awk '{print $3}' | head -1)
+
+          echo "Version: $VERSION"
+          echo "Build: $BUILD_NUMBER"
+          echo "Commit: $COMMIT_HASH"
+          echo "Environment: Beta (TestFlight)"
+
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+
+      - name: Embed commit hash in source Info.plist
+        run: |
+          INFO_PLIST="Scribe/Info.plist"
+
+          echo "Embedding commit hash in source Info.plist before build..."
+
+          /usr/libexec/PlistBuddy -c "Add :GitCommitHash string ${{ env.COMMIT_HASH }}" "$INFO_PLIST" 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Set :GitCommitHash ${{ env.COMMIT_HASH }}" "$INFO_PLIST"
+
+          echo "Embedded commit hash: ${{ env.COMMIT_HASH }}"
+          /usr/libexec/PlistBuddy -c "Print :GitCommitHash" "$INFO_PLIST"
+
+      - name: Archive app
+        run: |
+          xcodebuild archive \
+            -project Scribe.xcodeproj \
+            -scheme Scribe \
+            -archivePath $RUNNER_TEMP/Scribe.xcarchive \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CURRENT_PROJECT_VERSION=${{ env.BUILD_NUMBER }} \
+            DEVELOPMENT_TEAM=${{ vars.APPLE_TEAM_ID }} \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="${{ vars.CODE_SIGN_IDENTITY }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ vars.PROVISIONING_PROFILE_NAME }}" \
+            CODE_SIGN_ENTITLEMENTS="Scribe/Scribe-Production.entitlements"
+
+          echo "Verifying archive was created..."
+          if [ ! -d "$RUNNER_TEMP/Scribe.xcarchive" ]; then
+            echo "ERROR: Archive not found at $RUNNER_TEMP/Scribe.xcarchive"
+            exit 1
+          fi
+          ls -la $RUNNER_TEMP/Scribe.xcarchive
+
+      - name: Export IPA
+        run: |
+          echo "Creating ExportOptions.plist..."
+          cat > $RUNNER_TEMP/ExportOptions.plist <<EXPORT_EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>teamID</key>
+            <string>${{ vars.APPLE_TEAM_ID }}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.gordonbeeming.scribe</key>
+              <string>${{ vars.PROVISIONING_PROFILE_NAME }}</string>
+              <key>com.gordonbeeming.scribe.widget</key>
+              <string>${{ vars.WIDGET_PROVISIONING_PROFILE_NAME }}</string>
+            </dict>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>uploadBitcode</key>
+            <false/>
+          </dict>
+          </plist>
+          EXPORT_EOF
+
+          echo "ExportOptions.plist contents:"
+          cat $RUNNER_TEMP/ExportOptions.plist
+          echo ""
+
+          echo "Exporting archive..."
+          xcodebuild -exportArchive \
+            -archivePath $RUNNER_TEMP/Scribe.xcarchive \
+            -exportPath $RUNNER_TEMP/export \
+            -exportOptionsPlist $RUNNER_TEMP/ExportOptions.plist
+
+          echo "Verifying IPA was exported..."
+          if [ ! -f "$RUNNER_TEMP/export/Scribe.ipa" ]; then
+            echo "ERROR: IPA not found at $RUNNER_TEMP/export/Scribe.ipa"
+            echo "Contents of export directory:"
+            ls -la $RUNNER_TEMP/export/ || echo "Export directory does not exist"
+            exit 1
+          fi
+          ls -lh $RUNNER_TEMP/export/Scribe.ipa
+
+      - name: Upload to TestFlight
+        uses: apple-actions/upload-testflight-build@9fd28d4e690396e43caca69cef54cccccce77034 # v3.0.1
+        with:
+          app-path: ${{ runner.temp }}/export/Scribe.ipa
+          issuer-id: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          api-key-id: ${{ vars.APP_STORE_CONNECT_API_KEY_ID }}
+          api-private-key: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+
+      - name: Clean up
+        if: always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
+          rm -rf ~/.appstoreconnect/private_keys || true
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: Scribe-${{ github.run_number }}.ipa
+          path: ${{ runner.temp }}/export/Scribe.ipa
+          retention-days: 90
