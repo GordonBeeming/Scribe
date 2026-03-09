@@ -43,17 +43,27 @@ final class SettingsViewModel {
 
     var defaultRange: DefaultRange {
         get {
+            access(keyPath: \.defaultRange)
             let raw = Self.defaults?.string(forKey: "defaultRange") ?? DefaultRange.days14.rawValue
             return DefaultRange(rawValue: raw) ?? .days14
         }
         set {
-            Self.defaults?.set(newValue.rawValue, forKey: "defaultRange")
+            withMutation(keyPath: \.defaultRange) {
+                Self.defaults?.set(newValue.rawValue, forKey: "defaultRange")
+            }
         }
     }
 
     var defaultCurrency: String {
-        get { Self.defaults?.string(forKey: "defaultCurrency") ?? "AUD" }
-        set { Self.defaults?.set(newValue, forKey: "defaultCurrency") }
+        get {
+            access(keyPath: \.defaultCurrency)
+            return Self.defaults?.string(forKey: "defaultCurrency") ?? "AUD"
+        }
+        set {
+            withMutation(keyPath: \.defaultCurrency) {
+                Self.defaults?.set(newValue, forKey: "defaultCurrency")
+            }
+        }
     }
 
     static func currentDefaultRange() -> DefaultRange {

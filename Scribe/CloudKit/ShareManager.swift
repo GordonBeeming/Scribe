@@ -50,6 +50,7 @@ final class ShareManager: @unchecked Sendable {
 
 // MARK: - UICloudSharingController Wrapper
 
+#if os(iOS)
 struct CloudSharingView: UIViewControllerRepresentable {
     let share: CKShare?
     let container: CKContainer
@@ -94,3 +95,4 @@ struct CloudSharingView: UIViewControllerRepresentable {
         }
     }
 }
+#endif

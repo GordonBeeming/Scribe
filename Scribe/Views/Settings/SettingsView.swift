@@ -36,6 +36,8 @@ struct SettingsView: View {
                     SyncStatusRow()
                 }
 
+                DataManagementSection()
+
                 Section("About") {
                     LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
                     LabeledContent("Build", value: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
