@@ -5,16 +5,13 @@ import CloudKit
 @MainActor
 enum DemoDataGenerator {
     static func generate(in context: ModelContext) {
+        // Clear all existing data first to avoid duplicates
+        DataManagementService.clearAllData(in: context)
+
         let calendar = Calendar.current
         let now = Date()
 
-        // MARK: - Family Members (remove existing to avoid duplicates)
-
-        if let existingMembers = try? context.fetch(FetchDescriptor<FamilyMember>()) {
-            for member in existingMembers {
-                context.delete(member)
-            }
-        }
+        // MARK: - Family Members
 
         let alex = FamilyMember(name: "Alex", sortOrder: 0)
         let sam = FamilyMember(name: "Sam", sortOrder: 1)

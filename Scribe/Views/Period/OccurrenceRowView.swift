@@ -4,6 +4,7 @@ struct OccurrenceRowView: View {
     let item: PeriodViewModel.DayItem
     let onConfirm: () -> Void
     let onSkip: () -> Void
+    var onTap: (() -> Void)?
 
     var body: some View {
         HStack {
@@ -27,6 +28,10 @@ struct OccurrenceRowView: View {
                 type: item.budgetItem.type
             )
             .font(.subheadline.monospacedDigit())
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap?()
         }
         .contextMenu {
             if item.isConfirmed {

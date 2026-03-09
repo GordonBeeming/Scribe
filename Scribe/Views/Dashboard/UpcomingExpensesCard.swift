@@ -4,6 +4,7 @@ struct UpcomingExpensesCard: View {
     let items: [DashboardViewModel.UpcomingItem]
     let onConfirm: (DashboardViewModel.UpcomingItem) -> Void
     let onSkip: (DashboardViewModel.UpcomingItem) -> Void
+    var onTap: ((DashboardViewModel.UpcomingItem) -> Void)?
 
     private var displayItems: [DashboardViewModel.UpcomingItem] {
         Array(items.prefix(8))
@@ -26,7 +27,8 @@ struct UpcomingExpensesCard: View {
                     UpcomingItemRow(
                         item: item,
                         onConfirm: { onConfirm(item) },
-                        onSkip: { onSkip(item) }
+                        onSkip: { onSkip(item) },
+                        onTap: { onTap?(item) }
                     )
                 }
             }
@@ -40,6 +42,7 @@ private struct UpcomingItemRow: View {
     let item: DashboardViewModel.UpcomingItem
     let onConfirm: () -> Void
     let onSkip: () -> Void
+    var onTap: (() -> Void)?
 
     var body: some View {
         HStack {
@@ -68,6 +71,10 @@ private struct UpcomingItemRow: View {
                 type: item.budgetItem.type
             )
             .font(.subheadline.monospacedDigit())
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap?()
         }
     }
 }

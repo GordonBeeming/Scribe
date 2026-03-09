@@ -9,6 +9,9 @@ struct PeriodView: View {
 
     @State private var viewModel = PeriodViewModel()
     @State private var showingDatePicker = false
+    @State private var selectedItem: BudgetItem?
+    @State private var irregularConfirmItem: PeriodViewModel.DayItem?
+    @State private var irregularConfirmDate: Date = Date()
 
     private var days: [PeriodViewModel.DayData] {
         viewModel.generateDays(budgetItems: activeItems, occurrences: occurrences)
@@ -58,6 +61,16 @@ struct PeriodView: View {
                     onQuickRange: { viewModel.setQuickRange($0) }
                 )
             }
+            .sheet(item: $selectedItem) { item in
+                NavigationStack {
+                    BudgetItemDetailView(item: item)
+                }
+            }
+            .sheet(item: $irregularConfirmItem) { dayItem in
+                NextDatePickerSheet(itemName: dayItem.budgetItem.name) { nextDate in
+                    scheduleNextIrregular(dayItem, nextDate: nextDate)
+                }
+            }
         }
     }
 
@@ -99,7 +112,8 @@ struct PeriodView: View {
                         OccurrenceRowView(
                             item: item,
                             onConfirm: { confirmItem(item, on: day.date) },
-                            onSkip: { skipItem(item, on: day.date) }
+                            onSkip: { skipItem(item, on: day.date) },
+                            onTap: { selectedItem = item.budgetItem }
                         )
                     }
                 } header: {
@@ -159,7 +173,8 @@ struct PeriodView: View {
                             OccurrenceRowView(
                                 item: item,
                                 onConfirm: { confirmItem(item, on: day.date) },
-                                onSkip: { skipItem(item, on: day.date) }
+                                onSkip: { skipItem(item, on: day.date) },
+                                onTap: { selectedItem = item.budgetItem }
                             )
                         }
 
@@ -183,7 +198,19 @@ struct PeriodView: View {
             existing.actualAmount = nil
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
-        } else if let existing = item.occurrence {
+        } else {
+            // For irregular items, show the next-date picker after confirming
+            if item.budgetItem.frequency == .irregular {
+                irregularConfirmDate = date
+                irregularConfirmItem = item
+                return
+            }
+            doConfirm(item, on: date)
+        }
+    }
+
+    private func doConfirm(_ item: PeriodViewModel.DayItem, on date: Date) {
+        if let existing = item.occurrence {
             existing.status = .confirmed
             existing.confirmedAt = Date()
             try? modelContext.save()
@@ -200,6 +227,17 @@ struct PeriodView: View {
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
+    }
+
+    private func scheduleNextIrregular(_ item: PeriodViewModel.DayItem, nextDate: Date) {
+        // Confirm the current occurrence
+        doConfirm(item, on: irregularConfirmDate)
+
+        // Update the budget item's reference date to the next appointment
+        item.budgetItem.referenceDate = nextDate
+        item.budgetItem.modifiedAt = Date()
+        try? modelContext.save()
+        SyncCoordinator.shared.pushChange(for: item.budgetItem.id)
     }
 
     private func skipItem(_ item: PeriodViewModel.DayItem, on date: Date) {

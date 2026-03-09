@@ -101,7 +101,19 @@ struct DateCalculator {
             return yearlyDates(reference: referenceDate, start: start, end: end)
         case .biYearly:
             return biYearlyDates(reference: referenceDate, start: start, end: end)
+        case .irregular:
+            return irregularDates(reference: referenceDate, start: start, end: end)
         }
+    }
+
+    // MARK: - Irregular (shows once on reference date)
+
+    private static func irregularDates(reference: Date, start: Date, end: Date) -> [Date] {
+        let refDay = calendar.startOfDay(for: reference)
+        if refDay >= start && refDay <= end {
+            return [refDay]
+        }
+        return []
     }
 
     // MARK: - Monthly

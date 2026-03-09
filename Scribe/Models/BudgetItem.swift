@@ -22,6 +22,7 @@ enum Frequency: String, Codable, CaseIterable, Identifiable {
     case quarterly
     case yearly
     case biYearly
+    case irregular
 
     var id: String { rawValue }
 
@@ -33,6 +34,7 @@ enum Frequency: String, Codable, CaseIterable, Identifiable {
         case .quarterly: "Quarterly"
         case .yearly: "Yearly"
         case .biYearly: "Bi-Yearly"
+        case .irregular: "Irregular"
         }
     }
 

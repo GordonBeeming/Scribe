@@ -8,6 +8,8 @@ struct DashboardView: View {
     @Query private var occurrences: [Occurrence]
 
     @State private var viewModel = DashboardViewModel()
+    @State private var selectedItem: BudgetItem?
+    @State private var irregularConfirmItem: DashboardViewModel.UpcomingItem?
 
     var body: some View {
         NavigationStack {
@@ -27,13 +29,24 @@ struct DashboardView: View {
                                 occurrences: occurrences
                             ),
                             onConfirm: confirmOccurrence,
-                            onSkip: skipOccurrence
+                            onSkip: skipOccurrence,
+                            onTap: { selectedItem = $0.budgetItem }
                         )
                     }
                     .padding()
                 }
             }
             .navigationTitle("Scribe")
+            .sheet(item: $selectedItem) { item in
+                NavigationStack {
+                    BudgetItemDetailView(item: item)
+                }
+            }
+            .sheet(item: $irregularConfirmItem) { upcomingItem in
+                NextDatePickerSheet(itemName: upcomingItem.budgetItem.name) { nextDate in
+                    scheduleNextIrregular(upcomingItem, nextDate: nextDate)
+                }
+            }
         }
     }
 
@@ -55,7 +68,17 @@ struct DashboardView: View {
             existing.actualAmount = nil
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
-        } else if let existing = item.occurrence {
+        } else {
+            if item.budgetItem.frequency == .irregular {
+                irregularConfirmItem = item
+                return
+            }
+            doConfirmOccurrence(item)
+        }
+    }
+
+    private func doConfirmOccurrence(_ item: DashboardViewModel.UpcomingItem) {
+        if let existing = item.occurrence {
             existing.status = .confirmed
             existing.confirmedAt = Date()
             try? modelContext.save()
@@ -72,6 +95,15 @@ struct DashboardView: View {
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
+    }
+
+    private func scheduleNextIrregular(_ item: DashboardViewModel.UpcomingItem, nextDate: Date) {
+        doConfirmOccurrence(item)
+
+        item.budgetItem.referenceDate = nextDate
+        item.budgetItem.modifiedAt = Date()
+        try? modelContext.save()
+        SyncCoordinator.shared.pushChange(for: item.budgetItem.id)
     }
 
     private func skipOccurrence(_ item: DashboardViewModel.UpcomingItem) {
