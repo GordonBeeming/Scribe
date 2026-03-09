@@ -114,6 +114,7 @@ final class BudgetItem {
     var showLast: Bool
     var createdAt: Date
     var modifiedAt: Date
+    var ckRecordData: Data?
 
     @Relationship(deleteRule: .cascade, inverse: \AmountOverride.budgetItem)
     var amountOverrides: [AmountOverride]

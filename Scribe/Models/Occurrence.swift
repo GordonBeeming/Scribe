@@ -37,6 +37,7 @@ final class Occurrence {
     var statusRaw: String
     var confirmedAt: Date?
     var notes: String?
+    var ckRecordData: Data?
     var budgetItem: BudgetItem?
 
     var status: OccurrenceStatus {

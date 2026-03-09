@@ -8,11 +8,50 @@ enum RecordConversion {
     static let occurrenceRecordType = "Occurrence"
     static let familyMemberRecordType = "FamilyMember"
 
+    // MARK: - CKRecord System Fields
+
+    /// Encode a CKRecord's system fields (change tag, etc.) to Data for local storage.
+    static func encodeSystemFields(of record: CKRecord) -> Data {
+        let coder = NSKeyedArchiver(requiringSecureCoding: true)
+        record.encodeSystemFields(with: coder)
+        coder.finishEncoding()
+        return coder.encodedData
+    }
+
+    /// Restore a CKRecord from previously archived system fields.
+    /// Returns nil if data is invalid, in which case a fresh record should be created.
+    static func decodeLastKnownRecord(from data: Data) -> CKRecord? {
+        guard let coder = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
+        coder.requiresSecureCoding = true
+        let record = CKRecord(coder: coder)
+        coder.finishDecoding()
+        return record
+    }
+
+    /// Get or create a CKRecord for a model object. Reuses the last known record
+    /// (preserving system fields) if available, otherwise creates a fresh one.
+    private static func recordForModel(
+        recordType: String,
+        id: UUID,
+        ckRecordData: Data?,
+        zoneID: CKRecordZone.ID
+    ) -> CKRecord {
+        if let data = ckRecordData, let existing = decodeLastKnownRecord(from: data) {
+            return existing
+        }
+        let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
+        return CKRecord(recordType: recordType, recordID: recordID)
+    }
+
     // MARK: - BudgetItem -> CKRecord
 
     static func record(from item: BudgetItem, zoneID: CKRecordZone.ID) -> CKRecord {
-        let recordID = CKRecord.ID(recordName: item.id.uuidString, zoneID: zoneID)
-        let record = CKRecord(recordType: budgetItemRecordType, recordID: recordID)
+        let record = recordForModel(
+            recordType: budgetItemRecordType,
+            id: item.id,
+            ckRecordData: item.ckRecordData,
+            zoneID: zoneID
+        )
         record["name"] = item.name as CKRecordValue
         record["itemType"] = item.itemType as CKRecordValue
         record["amount"] = NSDecimalNumber(decimal: item.amount) as CKRecordValue
@@ -59,13 +98,18 @@ enum RecordConversion {
         item.sortOrder = record["sortOrder"] as? Int ?? 0
         item.showLast = (record["showLast"] as? Int ?? 0) == 1
         item.modifiedAt = record["modifiedAt"] as? Date ?? Date()
+        item.ckRecordData = encodeSystemFields(of: record)
     }
 
     // MARK: - AmountOverride -> CKRecord
 
     static func record(from override_: AmountOverride, zoneID: CKRecordZone.ID) -> CKRecord {
-        let recordID = CKRecord.ID(recordName: override_.id.uuidString, zoneID: zoneID)
-        let record = CKRecord(recordType: amountOverrideRecordType, recordID: recordID)
+        let record = recordForModel(
+            recordType: amountOverrideRecordType,
+            id: override_.id,
+            ckRecordData: override_.ckRecordData,
+            zoneID: zoneID
+        )
         record["effectiveDate"] = override_.effectiveDate as CKRecordValue
         record["amount"] = NSDecimalNumber(decimal: override_.amount) as CKRecordValue
         if let dayOfMonth = override_.overrideDayOfMonth {
@@ -90,8 +134,12 @@ enum RecordConversion {
     // MARK: - Occurrence -> CKRecord
 
     static func record(from occurrence: Occurrence, zoneID: CKRecordZone.ID) -> CKRecord {
-        let recordID = CKRecord.ID(recordName: occurrence.id.uuidString, zoneID: zoneID)
-        let record = CKRecord(recordType: occurrenceRecordType, recordID: recordID)
+        let record = recordForModel(
+            recordType: occurrenceRecordType,
+            id: occurrence.id,
+            ckRecordData: occurrence.ckRecordData,
+            zoneID: zoneID
+        )
         record["dueDate"] = occurrence.dueDate as CKRecordValue
         record["expectedAmount"] = NSDecimalNumber(decimal: occurrence.expectedAmount) as CKRecordValue
         if let actualAmount = occurrence.actualAmount {
@@ -117,8 +165,12 @@ enum RecordConversion {
     // MARK: - FamilyMember -> CKRecord
 
     static func record(from member: FamilyMember, zoneID: CKRecordZone.ID) -> CKRecord {
-        let recordID = CKRecord.ID(recordName: member.id.uuidString, zoneID: zoneID)
-        let record = CKRecord(recordType: familyMemberRecordType, recordID: recordID)
+        let record = recordForModel(
+            recordType: familyMemberRecordType,
+            id: member.id,
+            ckRecordData: member.ckRecordData,
+            zoneID: zoneID
+        )
         record["name"] = member.name as CKRecordValue
         record["sortOrder"] = member.sortOrder as CKRecordValue
         return record

@@ -9,6 +9,7 @@ final class AmountOverride {
     var overrideDayOfMonth: Int?
     var overrideReferenceDate: Date?
     var notes: String?
+    var ckRecordData: Data?
     var budgetItem: BudgetItem?
 
     init(

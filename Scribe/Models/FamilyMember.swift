@@ -6,6 +6,7 @@ final class FamilyMember {
     var id: UUID
     var name: String
     var sortOrder: Int
+    var ckRecordData: Data?
 
     @Relationship(inverse: \BudgetItem.familyMembers)
     var budgetItems: [BudgetItem]

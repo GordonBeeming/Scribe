@@ -3,9 +3,10 @@ import CloudKit
 import SwiftData
 import os
 
-/// Bridges SwiftData <-> CKSyncEngine.
-/// Listens for local SwiftData changes, pushes to CloudKit.
-/// Receives CloudKit changes, writes to SwiftData.
+/// Bridges SwiftData <-> CKSyncEngine following Apple's reference implementation.
+/// The engine automatically fetches remote changes and sends local changes.
+/// On first launch (nil state), it fetches all existing server records AND
+/// pushes all local records (triggered by the .accountChange .signIn event).
 final class SyncCoordinator: @unchecked Sendable {
     static let shared = SyncCoordinator()
 
@@ -13,18 +14,11 @@ final class SyncCoordinator: @unchecked Sendable {
     private var syncEngine: CKSyncEngine?
     private var modelContainer: ModelContainer?
 
-    /// Last known server change tokens per zone, persisted in UserDefaults
-    private let tokenKey = "syncEngineState"
-    private static let initialPushKey = "hasCompletedInitialPush"
+    private let stateKey = "syncEngineState"
+    private let zoneName = "ScribeBudgetZone"
 
-    /// Tracks whether we've ever done a full push of local data to CloudKit
-    private static var hasCompletedInitialPush: Bool {
-        get {
-            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.bool(forKey: initialPushKey) ?? false
-        }
-        set {
-            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.set(newValue, forKey: initialPushKey)
-        }
+    private var zoneID: CKRecordZone.ID {
+        CKRecordZone.ID(zoneName: zoneName, ownerName: CKCurrentUserDefaultName)
     }
 
     @MainActor
@@ -39,9 +33,16 @@ final class SyncCoordinator: @unchecked Sendable {
 
     private init() {}
 
+    // MARK: - Lifecycle
+
     @MainActor
     func start(with container: ModelContainer) {
         self.modelContainer = container
+
+        // Skip CloudKit in test environment
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
 
         Task {
             do {
@@ -49,35 +50,27 @@ final class SyncCoordinator: @unchecked Sendable {
                 logger.info("iCloud account status: \(String(describing: status))")
                 switch status {
                 case .available:
-                    break // Good to go
+                    break
                 case .temporarilyUnavailable:
                     logger.info("iCloud temporarily unavailable, proceeding anyway")
                 default:
-                    logger.warning("iCloud account not available (status: \(String(describing: status))), sync disabled")
+                    logger.warning("iCloud not available (status: \(String(describing: status)))")
                     await MainActor.run { syncStatus = .error("iCloud not available") }
                     return
                 }
 
-                try await CloudKitManager.shared.createZoneIfNeeded()
-                try await CloudKitManager.shared.createSubscriptionIfNeeded()
-
-                let priorState = loadSyncEngineState()
-                let isFirstSync = priorState == nil
-
                 let configuration = CKSyncEngine.Configuration(
                     database: CloudKitManager.shared.privateDatabase,
-                    stateSerialization: priorState,
+                    stateSerialization: loadSyncEngineState(),
                     delegate: self
                 )
                 let engine = CKSyncEngine(configuration)
                 self.syncEngine = engine
 
-                // On first sync (no prior state), push all local data so other
-                // devices can fetch it. Also marks that initial push has been done.
-                if isFirstSync || !Self.hasCompletedInitialPush {
-                    pushAllLocalData()
-                    Self.hasCompletedInitialPush = true
-                }
+                // Ensure our zone exists via the engine's pending database changes
+                engine.state.add(pendingDatabaseChanges: [
+                    .saveZone(CKRecordZone(zoneID: zoneID))
+                ])
 
                 await MainActor.run { syncStatus = .synced }
                 logger.info("CKSyncEngine started successfully")
@@ -104,30 +97,25 @@ final class SyncCoordinator: @unchecked Sendable {
         syncEngine?.state.add(pendingRecordZoneChanges: changes)
     }
 
-    // MARK: - Convenience push helpers
-
     /// Push a single model object by its UUID
     func pushChange(for id: UUID) {
-        let zoneID = CloudKitManager.shared.zoneID
         let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
         pushChanges(for: [recordID])
     }
 
     /// Push deletion for a single model object by its UUID
     func pushDeletion(for id: UUID) {
-        let zoneID = CloudKitManager.shared.zoneID
         let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
         pushDeletion(for: [recordID])
     }
 
-    /// Push all local data to CloudKit (useful for initial sync or recovery)
+    /// Push all local data to CloudKit. Called on .signIn and available manually.
     func pushAllLocalData() {
         guard let modelContainer else {
             logger.warning("Cannot push all data: no model container")
             return
         }
 
-        let zoneID = CloudKitManager.shared.zoneID
         let bgContext = ModelContext(modelContainer)
         var recordIDs: [CKRecord.ID] = []
 
@@ -153,6 +141,10 @@ final class SyncCoordinator: @unchecked Sendable {
         }
 
         if !recordIDs.isEmpty {
+            // Ensure zone is saved first
+            syncEngine?.state.add(pendingDatabaseChanges: [
+                .saveZone(CKRecordZone(zoneID: zoneID))
+            ])
             pushChanges(for: recordIDs)
             logger.info("Queued \(recordIDs.count) records for push to CloudKit")
         }
@@ -161,7 +153,7 @@ final class SyncCoordinator: @unchecked Sendable {
     // MARK: - State persistence
 
     private func loadSyncEngineState() -> CKSyncEngine.State.Serialization? {
-        guard let data = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.data(forKey: tokenKey) else {
+        guard let data = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.data(forKey: stateKey) else {
             return nil
         }
         return try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: data)
@@ -169,7 +161,7 @@ final class SyncCoordinator: @unchecked Sendable {
 
     private func saveSyncEngineState(_ state: CKSyncEngine.State.Serialization) {
         if let data = try? JSONEncoder().encode(state) {
-            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.set(data, forKey: tokenKey)
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.set(data, forKey: stateKey)
         }
     }
 }
@@ -177,6 +169,7 @@ final class SyncCoordinator: @unchecked Sendable {
 // MARK: - CKSyncEngineDelegate
 
 extension SyncCoordinator: CKSyncEngineDelegate {
+
     func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) {
         switch event {
         case .stateUpdate(let stateUpdate):
@@ -185,8 +178,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case .accountChange(let accountChange):
             handleAccountChange(accountChange)
 
-        case .fetchedDatabaseChanges:
-            break
+        case .fetchedDatabaseChanges(let dbChanges):
+            handleFetchedDatabaseChanges(dbChanges)
 
         case .fetchedRecordZoneChanges(let fetchedChanges):
             Task { @MainActor in
@@ -220,12 +213,11 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
     ) -> CKSyncEngine.RecordZoneChangeBatch? {
-        let pendingChanges = syncEngine.state.pendingRecordZoneChanges
+        let scope = context.options.scope
+        let pendingChanges = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
         guard !pendingChanges.isEmpty, let modelContainer else { return nil }
 
-        let zoneID = CloudKitManager.shared.zoneID
-
-        // Build records in a background context before creating the batch
+        let zoneID = self.zoneID
         let bgContext = ModelContext(modelContainer)
         var recordsToSave: [CKRecord] = []
         var recordIDsToDelete: [CKRecord.ID] = []
@@ -233,7 +225,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         for change in pendingChanges {
             switch change {
             case .saveRecord(let recordID):
-                guard let uuid = UUID(uuidString: recordID.recordName) else { continue }
+                guard let uuid = UUID(uuidString: recordID.recordName) else {
+                    syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    continue
+                }
                 if let item = try? bgContext.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
                     recordsToSave.append(RecordConversion.record(from: item, zoneID: zoneID))
                 } else if let override_ = try? bgContext.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
@@ -242,6 +237,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     recordsToSave.append(RecordConversion.record(from: occurrence, zoneID: zoneID))
                 } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
                     recordsToSave.append(RecordConversion.record(from: member, zoneID: zoneID))
+                } else {
+                    // Object deleted locally before send — remove from pending
+                    logger.info("Record \(recordID.recordName) not found locally, removing from pending")
+                    syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 }
             case .deleteRecord(let recordID):
                 recordIDsToDelete.append(recordID)
@@ -254,30 +253,56 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         return CKSyncEngine.RecordZoneChangeBatch(recordsToSave: recordsToSave, recordIDsToDelete: recordIDsToDelete, atomicByZone: false)
     }
 
-    // MARK: - Event handlers
+    // MARK: - Account Changes
 
     private func handleAccountChange(_ change: CKSyncEngine.Event.AccountChange) {
         switch change.changeType {
         case .signIn:
-            logger.info("iCloud account signed in")
+            // First time connecting (or reconnecting) — push all local data
+            // so it reaches the server. The engine will also fetch any server data.
+            logger.info("iCloud account signed in — pushing all local data")
+            syncEngine?.state.add(pendingDatabaseChanges: [
+                .saveZone(CKRecordZone(zoneID: zoneID))
+            ])
+            pushAllLocalData()
+
         case .signOut:
             logger.info("iCloud account signed out")
             Task { @MainActor in syncStatus = .error("Signed out of iCloud") }
+
         case .switchAccounts:
-            logger.info("iCloud account switched")
+            // Different account — clear local data and let the new account's data come in
+            logger.info("iCloud account switched — clearing local sync state")
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.removeObject(forKey: stateKey)
+
         @unknown default:
             break
         }
     }
 
+    // MARK: - Fetched Database Changes (zone deletions)
+
+    private func handleFetchedDatabaseChanges(_ changes: CKSyncEngine.Event.FetchedDatabaseChanges) {
+        for deletion in changes.deletions {
+            if deletion.zoneID == zoneID {
+                logger.warning("Our zone was deleted from the server — clearing local data")
+                Task { @MainActor in
+                    guard let context = modelContainer?.mainContext else { return }
+                    DataManagementService.clearAllData(in: context)
+                }
+            }
+        }
+    }
+
+    // MARK: - Fetched Record Zone Changes
+
     @MainActor
     private func handleFetchedRecordZoneChanges(_ changes: CKSyncEngine.Event.FetchedRecordZoneChanges) {
         guard let context = modelContainer?.mainContext else { return }
-        let zoneID = CloudKitManager.shared.zoneID
 
         for modification in changes.modifications {
             let record = modification.record
-            applyFetchedRecord(record, to: context, zoneID: zoneID)
+            applyFetchedRecord(record, to: context)
         }
 
         for deletion in changes.deletions {
@@ -288,18 +313,19 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     }
 
     @MainActor
-    private func applyFetchedRecord(_ record: CKRecord, to context: ModelContext, zoneID: CKRecordZone.ID) {
+    private func applyFetchedRecord(_ record: CKRecord, to context: ModelContext) {
         guard let uuid = UUID(uuidString: record.recordID.recordName) else { return }
+        let ckData = RecordConversion.encodeSystemFields(of: record)
 
         switch record.recordType {
         case RecordConversion.budgetItemRecordType:
             let predicate = #Predicate<BudgetItem> { $0.id == uuid }
-            let descriptor = FetchDescriptor<BudgetItem>(predicate: predicate)
-            if let existing = try? context.fetch(descriptor).first {
+            if let existing = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: predicate)).first {
                 let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
                 if remoteModified >= existing.modifiedAt {
                     RecordConversion.applyRecord(record, to: existing)
                 }
+                existing.ckRecordData = ckData
             } else {
                 let item = BudgetItem(
                     name: record["name"] as? String ?? "Unknown",
@@ -318,13 +344,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 item.id = uuid
                 item.createdAt = record["createdAt"] as? Date ?? Date()
                 item.modifiedAt = record["modifiedAt"] as? Date ?? Date()
+                item.ckRecordData = ckData
                 context.insert(item)
             }
 
         case RecordConversion.occurrenceRecordType:
             let predicate = #Predicate<Occurrence> { $0.id == uuid }
-            let descriptor = FetchDescriptor<Occurrence>(predicate: predicate)
-            if let existing = try? context.fetch(descriptor).first {
+            if let existing = try? context.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
                 let remoteStatus = OccurrenceStatus(rawValue: record["statusRaw"] as? String ?? "pending") ?? .pending
                 if remoteStatus == .confirmed || existing.status == .pending {
                     existing.statusRaw = record["statusRaw"] as? String ?? existing.statusRaw
@@ -333,6 +359,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                         existing.actualAmount = actualAmount.decimalValue
                     }
                 }
+                existing.ckRecordData = ckData
             } else {
                 let occurrence = Occurrence(
                     dueDate: record["dueDate"] as? Date ?? Date(),
@@ -343,19 +370,18 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     notes: record["notes"] as? String
                 )
                 occurrence.id = uuid
+                occurrence.ckRecordData = ckData
                 if let ref = record["budgetItemRef"] as? CKRecord.Reference,
                    let parentUUID = UUID(uuidString: ref.recordID.recordName) {
                     let parentPred = #Predicate<BudgetItem> { $0.id == parentUUID }
-                    let parentDesc = FetchDescriptor<BudgetItem>(predicate: parentPred)
-                    occurrence.budgetItem = try? context.fetch(parentDesc).first
+                    occurrence.budgetItem = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: parentPred)).first
                 }
                 context.insert(occurrence)
             }
 
         case RecordConversion.amountOverrideRecordType:
             let predicate = #Predicate<AmountOverride> { $0.id == uuid }
-            let descriptor = FetchDescriptor<AmountOverride>(predicate: predicate)
-            if let existing = try? context.fetch(descriptor).first {
+            if let existing = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: predicate)).first {
                 existing.effectiveDate = record["effectiveDate"] as? Date ?? existing.effectiveDate
                 if let amount = record["amount"] as? NSNumber {
                     existing.amount = amount.decimalValue
@@ -363,6 +389,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 existing.overrideDayOfMonth = record["overrideDayOfMonth"] as? Int
                 existing.overrideReferenceDate = record["overrideReferenceDate"] as? Date
                 existing.notes = record["notes"] as? String
+                existing.ckRecordData = ckData
             } else {
                 let override_ = AmountOverride(
                     effectiveDate: record["effectiveDate"] as? Date ?? Date(),
@@ -372,27 +399,28 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     notes: record["notes"] as? String
                 )
                 override_.id = uuid
+                override_.ckRecordData = ckData
                 if let ref = record["budgetItemRef"] as? CKRecord.Reference,
                    let parentUUID = UUID(uuidString: ref.recordID.recordName) {
                     let parentPred = #Predicate<BudgetItem> { $0.id == parentUUID }
-                    let parentDesc = FetchDescriptor<BudgetItem>(predicate: parentPred)
-                    override_.budgetItem = try? context.fetch(parentDesc).first
+                    override_.budgetItem = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: parentPred)).first
                 }
                 context.insert(override_)
             }
 
         case RecordConversion.familyMemberRecordType:
             let predicate = #Predicate<FamilyMember> { $0.id == uuid }
-            let descriptor = FetchDescriptor<FamilyMember>(predicate: predicate)
-            if let existing = try? context.fetch(descriptor).first {
+            if let existing = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: predicate)).first {
                 existing.name = record["name"] as? String ?? existing.name
                 existing.sortOrder = record["sortOrder"] as? Int ?? existing.sortOrder
+                existing.ckRecordData = ckData
             } else {
                 let member = FamilyMember(
                     name: record["name"] as? String ?? "Unknown",
                     sortOrder: record["sortOrder"] as? Int ?? 0
                 )
                 member.id = uuid
+                member.ckRecordData = ckData
                 context.insert(member)
             }
 
@@ -431,10 +459,91 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         }
     }
 
+    // MARK: - Sent Record Zone Changes (success & error handling)
+
     private func handleSentRecordZoneChanges(_ changes: CKSyncEngine.Event.SentRecordZoneChanges) {
+        // Update lastKnownRecord for successful saves
+        for savedRecord in changes.savedRecords {
+            updateCKRecordData(from: savedRecord)
+        }
+
+        // Handle failures
         for failure in changes.failedRecordSaves {
-            logger.error("Failed to save record \(failure.record.recordID.recordName): \(failure.error.localizedDescription)")
+            let recordID = failure.record.recordID
+            let error = failure.error
+
+            switch error.code {
+            case .serverRecordChanged:
+                // Conflict — server has a newer version. Use server record as base and re-queue.
+                if let serverRecord = error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord {
+                    logger.info("Conflict for \(recordID.recordName) — merging with server record")
+                    updateCKRecordData(from: serverRecord)
+                    syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                }
+
+            case .zoneNotFound:
+                // Zone doesn't exist yet — save zone and re-queue the record
+                logger.info("Zone not found — creating zone and re-queuing \(recordID.recordName)")
+                syncEngine?.state.add(pendingDatabaseChanges: [
+                    .saveZone(CKRecordZone(zoneID: zoneID))
+                ])
+                syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+
+            case .unknownItem:
+                // Record doesn't exist on server — clear lastKnownRecord and retry
+                logger.info("Unknown item \(recordID.recordName) — clearing cached record and retrying")
+                clearCKRecordData(for: recordID)
+                syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+
+            case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
+                 .requestRateLimited, .operationCancelled:
+                // Transient errors — engine retries automatically
+                logger.info("Transient error for \(recordID.recordName): \(error.localizedDescription)")
+
+            default:
+                logger.error("Failed to save record \(recordID.recordName): \(error.localizedDescription)")
+            }
         }
     }
 
+    /// Persist CKRecord system fields after a successful save or when resolving a conflict.
+    private func updateCKRecordData(from record: CKRecord) {
+        guard let modelContainer,
+              let uuid = UUID(uuidString: record.recordID.recordName) else { return }
+
+        let ckData = RecordConversion.encodeSystemFields(of: record)
+        let bgContext = ModelContext(modelContainer)
+
+        if let item = try? bgContext.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
+            item.ckRecordData = ckData
+        } else if let override_ = try? bgContext.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
+            override_.ckRecordData = ckData
+        } else if let occurrence = try? bgContext.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
+            occurrence.ckRecordData = ckData
+        } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
+            member.ckRecordData = ckData
+        }
+
+        try? bgContext.save()
+    }
+
+    /// Clear cached CKRecord system fields so next upload creates a fresh record.
+    private func clearCKRecordData(for recordID: CKRecord.ID) {
+        guard let modelContainer,
+              let uuid = UUID(uuidString: recordID.recordName) else { return }
+
+        let bgContext = ModelContext(modelContainer)
+
+        if let item = try? bgContext.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
+            item.ckRecordData = nil
+        } else if let override_ = try? bgContext.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
+            override_.ckRecordData = nil
+        } else if let occurrence = try? bgContext.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
+            occurrence.ckRecordData = nil
+        } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
+            member.ckRecordData = nil
+        }
+
+        try? bgContext.save()
+    }
 }
