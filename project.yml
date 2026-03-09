@@ -17,6 +17,8 @@ targets:
   Scribe:
     type: application
     platform: iOS
+    configFiles:
+      Release: ci-signing-app.xcconfig
     sources:
       - Scribe
     resources:
@@ -44,6 +46,8 @@ targets:
   ScribeWidgetExtension:
     type: app-extension
     platform: iOS
+    configFiles:
+      Release: ci-signing-widget.xcconfig
     sources:
       - path: ScribeWidget
       - path: Scribe/Utilities

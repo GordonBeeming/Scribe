@@ -91,9 +91,6 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Generate Xcode project
-        run: xcodegen generate
-
       - name: Import signing certificates
         env:
           CERTIFICATES_P12: ${{ secrets.CERTIFICATES_P12 }}
@@ -120,13 +117,46 @@ jobs:
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
 
-          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
-          echo "$PROVISIONING_PROFILE" | base64 --decode > $PP_PATH
-          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+          # Decode app profile and install by UUID
+          echo "$PROVISIONING_PROFILE" | base64 --decode > $RUNNER_TEMP/build_pp.mobileprovision
+          APP_PP_UUID=$(security cms -D -i $RUNNER_TEMP/build_pp.mobileprovision | grep -A1 UUID | grep string | sed 's/.*<string>\(.*\)<\/string>/\1/')
+          cp $RUNNER_TEMP/build_pp.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$APP_PP_UUID.mobileprovision
+          echo "APP_PP_UUID=$APP_PP_UUID" >> $GITHUB_ENV
 
-          WIDGET_PP_PATH=$RUNNER_TEMP/widget_pp.mobileprovision
-          echo "$WIDGET_PROVISIONING_PROFILE" | base64 --decode > $WIDGET_PP_PATH
-          cp $WIDGET_PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+          # Decode widget profile and install by UUID
+          echo "$WIDGET_PROVISIONING_PROFILE" | base64 --decode > $RUNNER_TEMP/widget_pp.mobileprovision
+          WIDGET_PP_UUID=$(security cms -D -i $RUNNER_TEMP/widget_pp.mobileprovision | grep -A1 UUID | grep string | sed 's/.*<string>\(.*\)<\/string>/\1/')
+          cp $RUNNER_TEMP/widget_pp.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$WIDGET_PP_UUID.mobileprovision
+          echo "WIDGET_PP_UUID=$WIDGET_PP_UUID" >> $GITHUB_ENV
+
+          echo "App profile UUID: $APP_PP_UUID"
+          echo "Widget profile UUID: $WIDGET_PP_UUID"
+
+      - name: Configure signing and generate project
+        run: |
+          # Write per-target signing xcconfig files (overwrite empty stubs)
+          cat > ci-signing-app.xcconfig <<XCCONFIG_EOF
+          CODE_SIGN_STYLE = Manual
+          DEVELOPMENT_TEAM = ${{ vars.APPLE_TEAM_ID }}
+          CODE_SIGN_IDENTITY = ${{ vars.CODE_SIGN_IDENTITY }}
+          PROVISIONING_PROFILE_SPECIFIER = ${{ vars.PROVISIONING_PROFILE_NAME }}
+          CODE_SIGN_ENTITLEMENTS = Scribe/Scribe-Production.entitlements
+          XCCONFIG_EOF
+
+          cat > ci-signing-widget.xcconfig <<XCCONFIG_EOF
+          CODE_SIGN_STYLE = Manual
+          DEVELOPMENT_TEAM = ${{ vars.APPLE_TEAM_ID }}
+          CODE_SIGN_IDENTITY = ${{ vars.CODE_SIGN_IDENTITY }}
+          PROVISIONING_PROFILE_SPECIFIER = ${{ vars.WIDGET_PROVISIONING_PROFILE_NAME }}
+          XCCONFIG_EOF
+
+          echo "Generated xcconfig files:"
+          cat ci-signing-app.xcconfig
+          echo "---"
+          cat ci-signing-widget.xcconfig
+
+          # Generate the Xcode project with signing configs
+          xcodegen generate
 
       - name: Set build number
         run: |
@@ -163,11 +193,7 @@ jobs:
             -archivePath $RUNNER_TEMP/Scribe.xcarchive \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            CURRENT_PROJECT_VERSION=${{ env.BUILD_NUMBER }} \
-            DEVELOPMENT_TEAM=${{ vars.APPLE_TEAM_ID }} \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="${{ vars.CODE_SIGN_IDENTITY }}" \
-            CODE_SIGN_ENTITLEMENTS="Scribe/Scribe-Production.entitlements"
+            CURRENT_PROJECT_VERSION=${{ env.BUILD_NUMBER }}
 
           echo "Verifying archive was created..."
           if [ ! -d "$RUNNER_TEMP/Scribe.xcarchive" ]; then
