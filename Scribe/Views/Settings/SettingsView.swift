@@ -34,6 +34,9 @@ struct SettingsView: View {
 
                 Section("Sync") {
                     SyncStatusRow()
+                    Button("Force Push All Data") {
+                        SyncCoordinator.shared.pushAllLocalData()
+                    }
                 }
 
                 DataManagementSection()
@@ -70,6 +73,7 @@ struct FamilyMemberManagementView: View {
                         )
                         modelContext.insert(member)
                         try? modelContext.save()
+                        SyncCoordinator.shared.pushChange(for: member.id)
                         newMemberName = ""
                     }
                     .disabled(newMemberName.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -81,10 +85,14 @@ struct FamilyMemberManagementView: View {
                     Text(member.name)
                 }
                 .onDelete { indexSet in
+                    let deletedIDs = indexSet.map { familyMembers[$0].id }
                     for index in indexSet {
                         modelContext.delete(familyMembers[index])
                     }
                     try? modelContext.save()
+                    for id in deletedIDs {
+                        SyncCoordinator.shared.pushDeletion(for: id)
+                    }
                 }
             }
         }

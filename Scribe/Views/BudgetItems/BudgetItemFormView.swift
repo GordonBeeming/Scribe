@@ -128,16 +128,20 @@ struct BudgetItemFormView: View {
     }
 
     private func save() {
+        let itemToSync: BudgetItem
         switch mode {
         case .create:
             let item = viewModel.createItem()
             viewModel.applyFamilyMembers(to: item, allMembers: familyMembers)
             modelContext.insert(item)
+            itemToSync = item
         case .edit(let item):
             viewModel.applyToItem(item)
             viewModel.applyFamilyMembers(to: item, allMembers: familyMembers)
+            itemToSync = item
         }
         try? modelContext.save()
+        SyncCoordinator.shared.pushChange(for: itemToSync.id)
     }
 }
 

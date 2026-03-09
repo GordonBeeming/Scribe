@@ -39,8 +39,10 @@ struct BudgetItemListView: View {
                                         }
                                         .swipeActions(edge: .trailing) {
                                             Button(role: .destructive) {
+                                                let deletedID = item.id
                                                 modelContext.delete(item)
                                                 try? modelContext.save()
+                                                SyncCoordinator.shared.pushDeletion(for: deletedID)
                                             } label: {
                                                 Label("Delete", systemImage: "trash")
                                             }
@@ -49,6 +51,7 @@ struct BudgetItemListView: View {
                                                 item.isActive.toggle()
                                                 item.modifiedAt = Date()
                                                 try? modelContext.save()
+                                                SyncCoordinator.shared.pushChange(for: item.id)
                                             } label: {
                                                 Label(
                                                     item.isActive ? "Pause" : "Resume",

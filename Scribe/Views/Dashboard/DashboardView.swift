@@ -53,9 +53,13 @@ struct DashboardView: View {
             existing.status = .pending
             existing.confirmedAt = nil
             existing.actualAmount = nil
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: existing.id)
         } else if let existing = item.occurrence {
             existing.status = .confirmed
             existing.confirmedAt = Date()
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
             let occurrence = Occurrence(
                 dueDate: item.dueDate,
@@ -65,15 +69,20 @@ struct DashboardView: View {
                 budgetItem: item.budgetItem
             )
             modelContext.insert(occurrence)
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
-        try? modelContext.save()
     }
 
     private func skipOccurrence(_ item: DashboardViewModel.UpcomingItem) {
         if let existing = item.occurrence, existing.status == .skipped {
             existing.status = .pending
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: existing.id)
         } else if let existing = item.occurrence {
             existing.status = .skipped
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
             let occurrence = Occurrence(
                 dueDate: item.dueDate,
@@ -82,8 +91,9 @@ struct DashboardView: View {
                 budgetItem: item.budgetItem
             )
             modelContext.insert(occurrence)
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
-        try? modelContext.save()
     }
 }
 

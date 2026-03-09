@@ -181,9 +181,13 @@ struct PeriodView: View {
             existing.status = .pending
             existing.confirmedAt = nil
             existing.actualAmount = nil
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: existing.id)
         } else if let existing = item.occurrence {
             existing.status = .confirmed
             existing.confirmedAt = Date()
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
             let occurrence = Occurrence(
                 dueDate: date,
@@ -193,15 +197,20 @@ struct PeriodView: View {
                 budgetItem: item.budgetItem
             )
             modelContext.insert(occurrence)
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
-        try? modelContext.save()
     }
 
     private func skipItem(_ item: PeriodViewModel.DayItem, on date: Date) {
         if let existing = item.occurrence, existing.status == .skipped {
             existing.status = .pending
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: existing.id)
         } else if let existing = item.occurrence {
             existing.status = .skipped
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
             let occurrence = Occurrence(
                 dueDate: date,
@@ -210,8 +219,9 @@ struct PeriodView: View {
                 budgetItem: item.budgetItem
             )
             modelContext.insert(occurrence)
+            try? modelContext.save()
+            SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
-        try? modelContext.save()
     }
 }
 

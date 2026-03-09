@@ -159,6 +159,7 @@ private struct AddOverrideSheet: View {
                             )
                             modelContext.insert(override_)
                             try? modelContext.save()
+                            SyncCoordinator.shared.pushChange(for: override_.id)
                             dismiss()
                         }
                     }

@@ -15,6 +15,17 @@ final class SyncCoordinator: @unchecked Sendable {
 
     /// Last known server change tokens per zone, persisted in UserDefaults
     private let tokenKey = "syncEngineState"
+    private static let initialPushKey = "hasCompletedInitialPush"
+
+    /// Tracks whether we've ever done a full push of local data to CloudKit
+    private static var hasCompletedInitialPush: Bool {
+        get {
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.bool(forKey: initialPushKey) ?? false
+        }
+        set {
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.set(newValue, forKey: initialPushKey)
+        }
+    }
 
     @MainActor
     var syncStatus: SyncStatus = .idle
@@ -44,13 +55,24 @@ final class SyncCoordinator: @unchecked Sendable {
                 try await CloudKitManager.shared.createZoneIfNeeded()
                 try await CloudKitManager.shared.createSubscriptionIfNeeded()
 
+                let priorState = loadSyncEngineState()
+                let isFirstSync = priorState == nil
+
                 let configuration = CKSyncEngine.Configuration(
                     database: CloudKitManager.shared.privateDatabase,
-                    stateSerialization: loadSyncEngineState(),
+                    stateSerialization: priorState,
                     delegate: self
                 )
                 let engine = CKSyncEngine(configuration)
                 self.syncEngine = engine
+
+                // On first sync (no prior state), push all local data so other
+                // devices can fetch it. Also marks that initial push has been done.
+                if isFirstSync || !Self.hasCompletedInitialPush {
+                    pushAllLocalData()
+                    Self.hasCompletedInitialPush = true
+                }
+
                 await MainActor.run { syncStatus = .synced }
                 logger.info("CKSyncEngine started successfully")
             } catch {
@@ -74,6 +96,60 @@ final class SyncCoordinator: @unchecked Sendable {
     func pushDeletion(for recordIDs: [CKRecord.ID]) {
         let changes = recordIDs.map { CKSyncEngine.PendingRecordZoneChange.deleteRecord($0) }
         syncEngine?.state.add(pendingRecordZoneChanges: changes)
+    }
+
+    // MARK: - Convenience push helpers
+
+    /// Push a single model object by its UUID
+    func pushChange(for id: UUID) {
+        let zoneID = CloudKitManager.shared.zoneID
+        let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
+        pushChanges(for: [recordID])
+    }
+
+    /// Push deletion for a single model object by its UUID
+    func pushDeletion(for id: UUID) {
+        let zoneID = CloudKitManager.shared.zoneID
+        let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
+        pushDeletion(for: [recordID])
+    }
+
+    /// Push all local data to CloudKit (useful for initial sync or recovery)
+    func pushAllLocalData() {
+        guard let modelContainer else {
+            logger.warning("Cannot push all data: no model container")
+            return
+        }
+
+        let zoneID = CloudKitManager.shared.zoneID
+        let bgContext = ModelContext(modelContainer)
+        var recordIDs: [CKRecord.ID] = []
+
+        if let items = try? bgContext.fetch(FetchDescriptor<BudgetItem>()) {
+            recordIDs.append(contentsOf: items.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+        }
+        if let overrides = try? bgContext.fetch(FetchDescriptor<AmountOverride>()) {
+            recordIDs.append(contentsOf: overrides.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+        }
+        if let occurrences = try? bgContext.fetch(FetchDescriptor<Occurrence>()) {
+            recordIDs.append(contentsOf: occurrences.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+        }
+        if let members = try? bgContext.fetch(FetchDescriptor<FamilyMember>()) {
+            recordIDs.append(contentsOf: members.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+        }
+
+        if !recordIDs.isEmpty {
+            pushChanges(for: recordIDs)
+            logger.info("Queued \(recordIDs.count) records for push to CloudKit")
+        }
     }
 
     // MARK: - State persistence
@@ -270,6 +346,35 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 context.insert(occurrence)
             }
 
+        case RecordConversion.amountOverrideRecordType:
+            let predicate = #Predicate<AmountOverride> { $0.id == uuid }
+            let descriptor = FetchDescriptor<AmountOverride>(predicate: predicate)
+            if let existing = try? context.fetch(descriptor).first {
+                existing.effectiveDate = record["effectiveDate"] as? Date ?? existing.effectiveDate
+                if let amount = record["amount"] as? NSNumber {
+                    existing.amount = amount.decimalValue
+                }
+                existing.overrideDayOfMonth = record["overrideDayOfMonth"] as? Int
+                existing.overrideReferenceDate = record["overrideReferenceDate"] as? Date
+                existing.notes = record["notes"] as? String
+            } else {
+                let override_ = AmountOverride(
+                    effectiveDate: record["effectiveDate"] as? Date ?? Date(),
+                    amount: (record["amount"] as? NSNumber)?.decimalValue ?? 0,
+                    overrideDayOfMonth: record["overrideDayOfMonth"] as? Int,
+                    overrideReferenceDate: record["overrideReferenceDate"] as? Date,
+                    notes: record["notes"] as? String
+                )
+                override_.id = uuid
+                if let ref = record["budgetItemRef"] as? CKRecord.Reference,
+                   let parentUUID = UUID(uuidString: ref.recordID.recordName) {
+                    let parentPred = #Predicate<BudgetItem> { $0.id == parentUUID }
+                    let parentDesc = FetchDescriptor<BudgetItem>(predicate: parentPred)
+                    override_.budgetItem = try? context.fetch(parentDesc).first
+                }
+                context.insert(override_)
+            }
+
         case RecordConversion.familyMemberRecordType:
             let predicate = #Predicate<FamilyMember> { $0.id == uuid }
             let descriptor = FetchDescriptor<FamilyMember>(predicate: predicate)
@@ -303,6 +408,11 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.occurrenceRecordType:
             let predicate = #Predicate<Occurrence> { $0.id == uuid }
             if let item = try? context.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
+                context.delete(item)
+            }
+        case RecordConversion.amountOverrideRecordType:
+            let predicate = #Predicate<AmountOverride> { $0.id == uuid }
+            if let item = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: predicate)).first {
                 context.delete(item)
             }
         case RecordConversion.familyMemberRecordType:
