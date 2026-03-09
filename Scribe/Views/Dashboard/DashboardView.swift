@@ -49,7 +49,11 @@ struct DashboardView: View {
     }
 
     private func confirmOccurrence(_ item: DashboardViewModel.UpcomingItem) {
-        if let existing = item.occurrence {
+        if let existing = item.occurrence, existing.status == .confirmed {
+            existing.status = .pending
+            existing.confirmedAt = nil
+            existing.actualAmount = nil
+        } else if let existing = item.occurrence {
             existing.status = .confirmed
             existing.confirmedAt = Date()
         } else {
@@ -66,7 +70,9 @@ struct DashboardView: View {
     }
 
     private func skipOccurrence(_ item: DashboardViewModel.UpcomingItem) {
-        if let existing = item.occurrence {
+        if let existing = item.occurrence, existing.status == .skipped {
+            existing.status = .pending
+        } else if let existing = item.occurrence {
             existing.status = .skipped
         } else {
             let occurrence = Occurrence(

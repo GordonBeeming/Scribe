@@ -177,7 +177,11 @@ struct PeriodView: View {
     // MARK: - Actions
 
     private func confirmItem(_ item: PeriodViewModel.DayItem, on date: Date) {
-        if let existing = item.occurrence {
+        if let existing = item.occurrence, existing.status == .confirmed {
+            existing.status = .pending
+            existing.confirmedAt = nil
+            existing.actualAmount = nil
+        } else if let existing = item.occurrence {
             existing.status = .confirmed
             existing.confirmedAt = Date()
         } else {
@@ -194,7 +198,9 @@ struct PeriodView: View {
     }
 
     private func skipItem(_ item: PeriodViewModel.DayItem, on date: Date) {
-        if let existing = item.occurrence {
+        if let existing = item.occurrence, existing.status == .skipped {
+            existing.status = .pending
+        } else if let existing = item.occurrence {
             existing.status = .skipped
         } else {
             let occurrence = Occurrence(

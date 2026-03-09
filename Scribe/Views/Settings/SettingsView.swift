@@ -39,8 +39,10 @@ struct SettingsView: View {
                 DataManagementSection()
 
                 Section("About") {
-                    LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
-                    LabeledContent("Build", value: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
+                    Text(AppVersion.fullVersionString)
+                        .font(.footnote)
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                        .frame(maxWidth: .infinity)
                 }
             }
             .navigationTitle("Settings")

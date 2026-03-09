@@ -29,16 +29,30 @@ struct OccurrenceRowView: View {
             .font(.subheadline.monospacedDigit())
         }
         .contextMenu {
-            Button {
-                onConfirm()
-            } label: {
-                Label("Confirm", systemImage: "checkmark.circle")
-            }
+            if item.isConfirmed {
+                Button {
+                    onConfirm()
+                } label: {
+                    Label("Undo Confirm", systemImage: "arrow.uturn.backward")
+                }
+            } else if item.isSkipped {
+                Button {
+                    onSkip()
+                } label: {
+                    Label("Undo Skip", systemImage: "arrow.uturn.backward")
+                }
+            } else {
+                Button {
+                    onConfirm()
+                } label: {
+                    Label("Confirm", systemImage: "checkmark.circle")
+                }
 
-            Button {
-                onSkip()
-            } label: {
-                Label("Skip", systemImage: "arrow.uturn.right")
+                Button {
+                    onSkip()
+                } label: {
+                    Label("Skip", systemImage: "arrow.uturn.right")
+                }
             }
         }
     }

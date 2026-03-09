@@ -29,6 +29,7 @@ struct DataManagementSection: View {
             } label: {
                 Label("Generate Demo Data", systemImage: "wand.and.stars")
             }
+            .tint(.primary)
             .alert("Generate Demo Data", isPresented: $showDemoDataAlert) {
                 Button("Add Demo Data") { generateDemoData() }
                 Button("Cancel", role: .cancel) {}
@@ -37,11 +38,17 @@ struct DataManagementSection: View {
             }
 
             // Clear All Data
-            Button(role: .destructive) {
+            Button {
                 showClearConfirmation = true
             } label: {
-                Label("Clear All Data", systemImage: "trash")
+                Label {
+                    Text("Clear All Data")
+                } icon: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.red)
+                }
             }
+            .tint(.primary)
             .confirmationDialog("Clear All Data", isPresented: $showClearConfirmation, titleVisibility: .visible) {
                 Button("Delete All Data", role: .destructive) {
                     DataManagementService.clearAllData(in: modelContext)
@@ -59,6 +66,7 @@ struct DataManagementSection: View {
             } label: {
                 Label("Export Data", systemImage: "square.and.arrow.up")
             }
+            .tint(.primary)
             .sheet(isPresented: $showShareSheet) {
                 if let url = exportFileURL {
                     ActivityViewRepresentable(activityItems: [url])
@@ -71,6 +79,7 @@ struct DataManagementSection: View {
             } label: {
                 Label("Import Data", systemImage: "square.and.arrow.down")
             }
+            .tint(.primary)
             .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.json]) { result in
                 handleFileImport(result)
             }

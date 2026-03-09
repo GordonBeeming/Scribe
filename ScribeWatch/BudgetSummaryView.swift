@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct BudgetSummaryView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<BudgetItem> { $0.isActive }, sort: \BudgetItem.sortOrder)
     private var budgetItems: [BudgetItem]
 
@@ -63,6 +64,18 @@ struct BudgetSummaryView: View {
                 }
             }
             .navigationTitle("Scribe")
+            #if DEBUG
+            .toolbar {
+                if budgetItems.isEmpty {
+                    ToolbarItem(placement: .bottomBar) {
+                        Button("Load Demo Data") {
+                            DataManagementService.clearAllData(in: modelContext)
+                            DemoDataGenerator.generate(in: modelContext)
+                        }
+                    }
+                }
+            }
+            #endif
         }
     }
 

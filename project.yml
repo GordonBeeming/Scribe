@@ -88,6 +88,8 @@ targets:
         group: Shared/Models
       - path: Scribe/CloudKit
         group: Shared/CloudKit
+      - path: Scribe/Services
+        group: Shared/Services
     info:
       path: ScribeWatch/Info.plist
       properties:
