@@ -167,7 +167,6 @@ jobs:
             DEVELOPMENT_TEAM=${{ vars.APPLE_TEAM_ID }} \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="${{ vars.CODE_SIGN_IDENTITY }}" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ vars.PROVISIONING_PROFILE_NAME }}" \
             CODE_SIGN_ENTITLEMENTS="Scribe/Scribe-Production.entitlements"
 
           echo "Verifying archive was created..."
