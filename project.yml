@@ -27,6 +27,7 @@ targets:
     info:
       path: Scribe/Info.plist
       properties:
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UIBackgroundModes:
           - remote-notification
         ITSAppUsesNonExemptEncryption: false
@@ -64,6 +65,7 @@ targets:
     info:
       path: ScribeWidget/Info.plist
       properties:
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: Scribe Widget
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
@@ -93,6 +95,7 @@ targets:
     info:
       path: ScribeWatch/Info.plist
       properties:
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UIBackgroundModes:
           - remote-notification
         WKApplication: true
@@ -121,6 +124,7 @@ targets:
     info:
       path: ScribeWatchWidget/Info.plist
       properties:
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: Scribe Watch Widget
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
