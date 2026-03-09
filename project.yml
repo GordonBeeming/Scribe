@@ -29,6 +29,7 @@ targets:
       properties:
         UIBackgroundModes:
           - remote-notification
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -93,6 +94,7 @@ targets:
         UIBackgroundModes:
           - remote-notification
         WKApplication: true
+        ITSAppUsesNonExemptEncryption: false
         WKCompanionAppBundleIdentifier: com.gordonbeeming.scribe
     settings:
       base:
