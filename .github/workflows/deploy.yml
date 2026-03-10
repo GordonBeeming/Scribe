@@ -3,6 +3,15 @@ name: Build, Test & Deploy to TestFlight
 on:
   push:
     branches: [main]
+    paths:
+      - 'Scribe/**'
+      - 'ScribeTests/**'
+      - 'ScribeWidget/**'
+      - 'ScribeWatch/**'
+      - 'ScribeWatchWidget/**'
+      - 'project.yml'
+      - '*.xcconfig'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 concurrency:

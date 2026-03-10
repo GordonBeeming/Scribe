@@ -3,6 +3,15 @@ name: PR Verification
 on:
   pull_request:
     branches: [main]
+    paths:
+      - 'Scribe/**'
+      - 'ScribeTests/**'
+      - 'ScribeWidget/**'
+      - 'ScribeWatch/**'
+      - 'ScribeWatchWidget/**'
+      - 'project.yml'
+      - '*.xcconfig'
+      - '.github/workflows/pr-verification.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
