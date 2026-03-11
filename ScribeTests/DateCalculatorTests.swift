@@ -207,4 +207,170 @@ struct DateCalculatorTests {
         // After second override
         #expect(item.effectiveAmount(on: makeDate(year: 2026, month: 7, day: 15)) == 800)
     }
+
+    // MARK: - Adjusted Payment Date
+
+    @Test("Saturday shifts to Friday")
+    func adjustedPaymentDateSaturdayToFriday() {
+        let saturday = makeDate(year: 2026, month: 3, day: 14) // Saturday
+        let weekends: Set<Int> = [1, 7] // Sun, Sat
+
+        let adjusted = DateCalculator.adjustedPaymentDate(
+            scheduledDate: saturday,
+            adjustmentWeekdays: weekends,
+            holidays: []
+        )
+
+        #expect(calendar.component(.weekday, from: adjusted) == 6) // Friday
+        #expect(calendar.component(.day, from: adjusted) == 13)
+    }
+
+    @Test("Sunday shifts to Friday when Sat and Sun are adjustment days")
+    func adjustedPaymentDateSundayToFriday() {
+        let sunday = makeDate(year: 2026, month: 3, day: 15) // Sunday
+        let weekends: Set<Int> = [1, 7] // Sun, Sat
+
+        let adjusted = DateCalculator.adjustedPaymentDate(
+            scheduledDate: sunday,
+            adjustmentWeekdays: weekends,
+            holidays: []
+        )
+
+        #expect(calendar.component(.weekday, from: adjusted) == 6) // Friday
+        #expect(calendar.component(.day, from: adjusted) == 13)
+    }
+
+    @Test("Monday stays on Monday when only weekends shift")
+    func adjustedPaymentDateMondayStays() {
+        let monday = makeDate(year: 2026, month: 3, day: 16) // Monday
+        let weekends: Set<Int> = [1, 7]
+
+        let adjusted = DateCalculator.adjustedPaymentDate(
+            scheduledDate: monday,
+            adjustmentWeekdays: weekends,
+            holidays: []
+        )
+
+        #expect(calendar.component(.weekday, from: adjusted) == 2) // Monday
+        #expect(calendar.component(.day, from: adjusted) == 16)
+    }
+
+    @Test("Friday shifts to Thursday when Friday is a public holiday")
+    func adjustedPaymentDateFridayHolidayToThursday() {
+        let friday = makeDate(year: 2026, month: 3, day: 13) // Friday
+        let holidays: Set<Date> = [friday]
+
+        let adjusted = DateCalculator.adjustedPaymentDate(
+            scheduledDate: friday,
+            adjustmentWeekdays: [],
+            holidays: holidays
+        )
+
+        #expect(calendar.component(.day, from: adjusted) == 12) // Thursday
+    }
+
+    @Test("Cascading: Saturday -> Friday (holiday) -> Thursday")
+    func adjustedPaymentDateCascading() {
+        let saturday = makeDate(year: 2026, month: 3, day: 14) // Saturday
+        let fridayHoliday = makeDate(year: 2026, month: 3, day: 13)
+        let weekends: Set<Int> = [1, 7] // Sun, Sat
+        let holidays: Set<Date> = [fridayHoliday]
+
+        let adjusted = DateCalculator.adjustedPaymentDate(
+            scheduledDate: saturday,
+            adjustmentWeekdays: weekends,
+            holidays: holidays
+        )
+
+        #expect(calendar.component(.day, from: adjusted) == 12) // Thursday
+    }
+
+    // MARK: - Budget Display Date
+
+    @Test("Income with dayAfter reflection shows one day after adjusted date")
+    func budgetDisplayDateDayAfter() {
+        let item = BudgetItem(
+            name: "Salary", type: .income, amount: 5000,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income,
+            budgetReflection: .dayAfter
+        )
+
+        let date = makeDate(year: 2026, month: 3, day: 14)
+        let displayDate = DateCalculator.budgetDisplayDate(
+            for: item, scheduledDate: date, holidays: []
+        )
+
+        #expect(calendar.component(.day, from: displayDate) == 15)
+    }
+
+    @Test("Income with dayBefore reflection shows one day before adjusted date")
+    func budgetDisplayDateDayBefore() {
+        let item = BudgetItem(
+            name: "Salary", type: .income, amount: 5000,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income,
+            budgetReflection: .dayBefore
+        )
+
+        let date = makeDate(year: 2026, month: 3, day: 14)
+        let displayDate = DateCalculator.budgetDisplayDate(
+            for: item, scheduledDate: date, holidays: []
+        )
+
+        #expect(calendar.component(.day, from: displayDate) == 13)
+    }
+
+    @Test("Income with paymentDate reflection stays on adjusted date")
+    func budgetDisplayDatePaymentDate() {
+        let item = BudgetItem(
+            name: "Salary", type: .income, amount: 5000,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income,
+            budgetReflection: .paymentDate
+        )
+
+        let date = makeDate(year: 2026, month: 3, day: 14)
+        let displayDate = DateCalculator.budgetDisplayDate(
+            for: item, scheduledDate: date, holidays: []
+        )
+
+        #expect(calendar.component(.day, from: displayDate) == 14)
+    }
+
+    @Test("Expense item ignores reflection and returns scheduled date")
+    func budgetDisplayDateExpenseUnchanged() {
+        let item = BudgetItem(
+            name: "Rent", type: .expense, amount: 2000,
+            frequency: .monthly, dayOfMonth: 1,
+            category: .housing,
+            budgetReflection: .dayAfter
+        )
+
+        let date = makeDate(year: 2026, month: 3, day: 1)
+        let displayDate = DateCalculator.budgetDisplayDate(
+            for: item, scheduledDate: date, holidays: []
+        )
+
+        #expect(calendar.component(.day, from: displayDate) == 1)
+    }
+
+    @Test("Income with weekend shift + dayAfter combines correctly")
+    func budgetDisplayDateCombinedShiftAndReflection() {
+        let item = BudgetItem(
+            name: "Salary", type: .income, amount: 5000,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income,
+            budgetReflection: .dayAfter,
+            payDayAdjustmentDays: "1,7" // Sat, Sun
+        )
+
+        // March 14, 2026 is a Saturday -> shifts to Friday 13 -> dayAfter = Saturday 14
+        let date = makeDate(year: 2026, month: 3, day: 14)
+        let displayDate = DateCalculator.budgetDisplayDate(
+            for: item, scheduledDate: date, holidays: []
+        )
+
+        #expect(calendar.component(.day, from: displayDate) == 14)
+    }
 }

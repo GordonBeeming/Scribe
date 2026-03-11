@@ -20,6 +20,12 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Dashboard") {
+                    NavigationLink("Dashboard Sections") {
+                        DashboardSectionsView()
+                    }
+                }
+
                 Section("Family Members") {
                     NavigationLink("Manage Family Members") {
                         FamilyMemberManagementView()

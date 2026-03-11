@@ -317,6 +317,55 @@ struct DateCalculator {
         return results.sorted()
     }
 
+    // MARK: - Payment Date Adjustments
+
+    /// Adjust a scheduled payment date backward when it falls on specified weekdays or public holidays.
+    /// Cascades: if the adjusted date also matches, shifts further back. Max 7 iterations.
+    static func adjustedPaymentDate(
+        scheduledDate: Date,
+        adjustmentWeekdays: Set<Int>,
+        holidays: Set<Date>
+    ) -> Date {
+        var date = calendar.startOfDay(for: scheduledDate)
+        for _ in 0..<7 {
+            let weekday = calendar.component(.weekday, from: date)
+            let isHoliday = holidays.contains(date)
+            if adjustmentWeekdays.contains(weekday) || isHoliday {
+                date = calendar.date(byAdding: .day, value: -1, to: date) ?? date
+            } else {
+                break
+            }
+        }
+        return date
+    }
+
+    /// Compute the display date for a budget item, applying pay day adjustments and reflection offset.
+    /// For non-income items, returns the scheduledDate unchanged.
+    static func budgetDisplayDate(
+        for item: BudgetItem,
+        scheduledDate: Date,
+        holidays: Set<Date>
+    ) -> Date {
+        guard item.type == .income else {
+            return calendar.startOfDay(for: scheduledDate)
+        }
+
+        let adjustedDate = adjustedPaymentDate(
+            scheduledDate: scheduledDate,
+            adjustmentWeekdays: item.payDayAdjustmentWeekdays,
+            holidays: item.publicHolidayCountryCode != nil ? holidays : []
+        )
+
+        switch item.budgetReflection {
+        case .paymentDate:
+            return adjustedDate
+        case .dayAfter:
+            return calendar.date(byAdding: .day, value: 1, to: adjustedDate) ?? adjustedDate
+        case .dayBefore:
+            return calendar.date(byAdding: .day, value: -1, to: adjustedDate) ?? adjustedDate
+        }
+    }
+
     // MARK: - Helpers
 
     private static func monthsDifference(from refComponents: DateComponents, to targetComponents: DateComponents) -> Int {

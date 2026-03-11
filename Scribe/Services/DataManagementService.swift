@@ -49,6 +49,20 @@ enum DataManagementService {
             for m in members { context.delete(m) }
         }
 
+        if let sections = try? context.fetch(FetchDescriptor<DashboardSection>()) {
+            deletionIDs.append(contentsOf: sections.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+            for s in sections { context.delete(s) }
+        }
+
+        if let adjustments = try? context.fetch(FetchDescriptor<QuickAdjustment>()) {
+            deletionIDs.append(contentsOf: adjustments.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+            for a in adjustments { context.delete(a) }
+        }
+
         try? context.save()
 
         if !deletionIDs.isEmpty {
@@ -63,6 +77,8 @@ enum DataManagementService {
         let overrides = (try? context.fetch(FetchDescriptor<AmountOverride>())) ?? []
         let occurrences = (try? context.fetch(FetchDescriptor<Occurrence>())) ?? []
         let members = (try? context.fetch(FetchDescriptor<FamilyMember>())) ?? []
+        let sections = (try? context.fetch(FetchDescriptor<DashboardSection>())) ?? []
+        let adjustments = (try? context.fetch(FetchDescriptor<QuickAdjustment>())) ?? []
 
         let export = ScribeExport(
             exportDate: Date(),
@@ -70,7 +86,9 @@ enum DataManagementService {
             familyMembers: members.map { CodableFamilyMember(from: $0) },
             budgetItems: items.map { CodableBudgetItem(from: $0) },
             amountOverrides: overrides.map { CodableAmountOverride(from: $0) },
-            occurrences: occurrences.map { CodableOccurrence(from: $0) }
+            occurrences: occurrences.map { CodableOccurrence(from: $0) },
+            dashboardSections: sections.map { CodableDashboardSection(from: $0) },
+            quickAdjustments: adjustments.map { CodableQuickAdjustment(from: $0) }
         )
 
         let encoder = JSONEncoder()
@@ -169,6 +187,47 @@ enum DataManagementService {
             recordIDs.append(CKRecord.ID(recordName: codableOcc.id.uuidString, zoneID: zoneID))
         }
 
+        // Insert dashboard sections
+        if let codableSections = export.dashboardSections {
+            for codableSection in codableSections {
+                if mode == .merge, let existing = existingDashboardSection(id: codableSection.id, in: context) {
+                    if codableSection.modifiedAt > existing.modifiedAt {
+                        existing.sectionTypeRaw = codableSection.sectionTypeRaw
+                        existing.anchorRaw = codableSection.anchorRaw
+                        existing.isEnabled = codableSection.isEnabled
+                        existing.sortOrder = codableSection.sortOrder
+                        existing.label = codableSection.label
+                        existing.modifiedAt = codableSection.modifiedAt
+                    }
+                } else {
+                    let section = codableSection.toModel()
+                    context.insert(section)
+                }
+                recordIDs.append(CKRecord.ID(recordName: codableSection.id.uuidString, zoneID: zoneID))
+            }
+        }
+
+        // Insert quick adjustments
+        if let codableAdjustments = export.quickAdjustments {
+            for codableAdjustment in codableAdjustments {
+                if mode == .merge, let existing = existingQuickAdjustment(id: codableAdjustment.id, in: context) {
+                    if codableAdjustment.modifiedAt > existing.modifiedAt {
+                        existing.adjustmentTypeRaw = codableAdjustment.adjustmentTypeRaw
+                        existing.date = codableAdjustment.date
+                        existing.amount = codableAdjustment.amount
+                        existing.name = codableAdjustment.name
+                        existing.currencyCode = codableAdjustment.currencyCode
+                        existing.notes = codableAdjustment.notes
+                        existing.modifiedAt = codableAdjustment.modifiedAt
+                    }
+                } else {
+                    let adjustment = codableAdjustment.toModel()
+                    context.insert(adjustment)
+                }
+                recordIDs.append(CKRecord.ID(recordName: codableAdjustment.id.uuidString, zoneID: zoneID))
+            }
+        }
+
         try? context.save()
 
         if !recordIDs.isEmpty {
@@ -194,6 +253,14 @@ enum DataManagementService {
         try? context.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == id })).first
     }
 
+    private static func existingDashboardSection(id: UUID, in context: ModelContext) -> DashboardSection? {
+        try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == id })).first
+    }
+
+    private static func existingQuickAdjustment(id: UUID, in context: ModelContext) -> QuickAdjustment? {
+        try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == id })).first
+    }
+
     private static func updateBudgetItem(_ item: BudgetItem, from codable: CodableBudgetItem) {
         item.name = codable.name
         item.itemType = codable.itemType
@@ -207,6 +274,9 @@ enum DataManagementService {
         item.notes = codable.notes
         item.sortOrder = codable.sortOrder
         item.showLast = codable.showLast
+        item.budgetReflectionRaw = codable.budgetReflectionRaw
+        item.payDayAdjustmentDays = codable.payDayAdjustmentDays
+        item.publicHolidayCountryCode = codable.publicHolidayCountryCode
         item.modifiedAt = codable.modifiedAt
     }
 }

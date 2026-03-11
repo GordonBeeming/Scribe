@@ -1,7 +1,7 @@
 import SwiftUI
 
-struct OccurrenceRowView: View {
-    let item: PeriodViewModel.DayItem
+struct UpcomingItemRow: View {
+    let item: DashboardViewModel.UpcomingItem
     let onConfirm: () -> Void
     let onSkip: () -> Void
     var onTap: (() -> Void)?
@@ -32,16 +32,21 @@ struct OccurrenceRowView: View {
     var body: some View {
         HStack {
             Button(action: onConfirm) {
-                Image(systemName: statusIcon)
-                    .foregroundStyle(statusColor)
+                Image(systemName: item.isConfirmed ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(item.isConfirmed ? ScribeTheme.success : ScribeTheme.secondaryText)
                     .imageScale(.large)
             }
             .buttonStyle(.plain)
 
-            Text(item.budgetItem.name)
-                .font(.subheadline)
-                .strikethrough(item.isConfirmed || item.isSkipped)
-                .foregroundStyle(item.isSkipped ? ScribeTheme.secondaryText : ScribeTheme.primaryText)
+            VStack(alignment: .leading) {
+                Text(item.budgetItem.name)
+                    .font(.subheadline)
+                    .strikethrough(item.isConfirmed)
+
+                Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
+                    .font(.caption)
+                    .foregroundStyle(ScribeTheme.secondaryText)
+            }
 
             Spacer()
 
@@ -64,38 +69,12 @@ struct OccurrenceRowView: View {
         .onTapGesture {
             onTap?()
         }
-        .contextMenu {
-            if item.isConfirmed {
-                Button {
-                    onConfirm()
-                } label: {
-                    Label("Undo Confirm", systemImage: "arrow.uturn.backward")
-                }
-            } else if item.isSkipped {
-                Button {
-                    onSkip()
-                } label: {
-                    Label("Undo Skip", systemImage: "arrow.uturn.backward")
-                }
-            } else {
-                Button {
-                    onConfirm()
-                } label: {
-                    Label("Confirm", systemImage: "checkmark.circle")
-                }
-
-                Button {
-                    onSkip()
-                } label: {
-                    Label("Skip", systemImage: "arrow.uturn.right")
-                }
-            }
-        }
     }
 
     private var amountDisplay: some View {
         VStack(alignment: .trailing, spacing: 2) {
             if isForeignCurrency, let converted = convertedAmount {
+                // Show converted base currency amount with * to indicate estimate
                 HStack(spacing: 0) {
                     Text("*")
                         .foregroundStyle(ScribeTheme.secondaryText)
@@ -107,6 +86,7 @@ struct OccurrenceRowView: View {
                 }
                 .font(.subheadline.monospacedDigit())
 
+                // Show original foreign amount as "USD 10.00"
                 Text("\(item.budgetItem.currencyCode) \(CurrencyFormatter.formatNumber(displayAmount))")
                     .font(.caption2)
                     .foregroundStyle(ScribeTheme.secondaryText)
@@ -125,18 +105,6 @@ struct OccurrenceRowView: View {
                     .foregroundStyle(ScribeTheme.secondaryText)
             }
         }
-    }
-
-    private var statusIcon: String {
-        if item.isConfirmed { return "checkmark.circle.fill" }
-        if item.isSkipped { return "arrow.uturn.right.circle" }
-        return "circle"
-    }
-
-    private var statusColor: Color {
-        if item.isConfirmed { return ScribeTheme.success }
-        if item.isSkipped { return ScribeTheme.secondaryText }
-        return ScribeTheme.secondaryText
     }
 
     private var amountEditorPopover: some View {

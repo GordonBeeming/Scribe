@@ -31,14 +31,20 @@ enum DemoDataGenerator {
         let alexSalary = BudgetItem(
             name: "Alex's Salary", type: .income, amount: 5200,
             frequency: .monthly, dayOfMonth: 14,
-            category: .income, sortOrder: 0
+            category: .income, sortOrder: 0,
+            budgetReflection: .dayAfter,
+            payDayAdjustmentDays: "1,7",
+            publicHolidayCountryCode: "ZA"
         )
         alexSalary.familyMembers = [alex]
 
         let samSalary = BudgetItem(
             name: "Sam's Salary", type: .income, amount: 4800,
             frequency: .monthly, dayOfMonth: 28,
-            category: .income, sortOrder: 1
+            category: .income, sortOrder: 1,
+            budgetReflection: .dayAfter,
+            payDayAdjustmentDays: "1,7",
+            publicHolidayCountryCode: "ZA"
         )
         samSalary.familyMembers = [sam]
 
@@ -297,6 +303,24 @@ enum DemoDataGenerator {
         )
         context.insert(healthOcc)
 
+        // MARK: - Dashboard Sections
+
+        let monthlySection = DashboardSection(
+            sectionType: .monthlySummary,
+            anchor: .linkedIncome(budgetItemID: alexSalary.id),
+            sortOrder: 0,
+            label: "Monthly Overview"
+        )
+        context.insert(monthlySection)
+
+        let weeklySection = DashboardSection(
+            sectionType: .detailedWeekly,
+            anchor: .linkedIncome(budgetItemID: samSalary.id),
+            sortOrder: 1,
+            label: "Sam's Weekly"
+        )
+        context.insert(weeklySection)
+
         try? context.save()
 
         // MARK: - Push to CloudKit
@@ -314,6 +338,10 @@ enum DemoDataGenerator {
             CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
         })
         recordIDs.append(contentsOf: [rentOcc1, salaryOcc, netflixOcc, rentOccUpcoming, savingsOcc, groceriesOcc, gymSkipped, healthOcc].map {
+            CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+        })
+
+        recordIDs.append(contentsOf: [monthlySection, weeklySection].map {
             CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
         })
 

@@ -92,4 +92,110 @@ struct ModelTests {
             #expect(!category.displayName.isEmpty)
         }
     }
+
+    // MARK: - BudgetItem Income Fields
+
+    @Test("BudgetItem budgetReflection defaults to paymentDate")
+    func budgetItemReflectionDefault() {
+        let item = BudgetItem(
+            name: "Test", type: .income, amount: 100,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income
+        )
+        #expect(item.budgetReflection == .paymentDate)
+        #expect(item.budgetReflectionRaw == nil)
+    }
+
+    @Test("BudgetItem budgetReflection round-trips through raw value")
+    func budgetItemReflectionRoundTrip() {
+        let item = BudgetItem(
+            name: "Test", type: .income, amount: 100,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income,
+            budgetReflection: .dayAfter
+        )
+        #expect(item.budgetReflection == .dayAfter)
+        #expect(item.budgetReflectionRaw == "dayAfter")
+    }
+
+    @Test("BudgetItem payDayAdjustmentWeekdays parses comma-separated string")
+    func budgetItemAdjustmentWeekdays() {
+        let item = BudgetItem(
+            name: "Test", type: .income, amount: 100,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income,
+            payDayAdjustmentDays: "1,7"
+        )
+        #expect(item.payDayAdjustmentWeekdays == [1, 7])
+    }
+
+    @Test("BudgetItem payDayAdjustmentWeekdays set writes sorted string")
+    func budgetItemAdjustmentWeekdaysSet() {
+        let item = BudgetItem(
+            name: "Test", type: .income, amount: 100,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income
+        )
+        item.payDayAdjustmentWeekdays = [7, 1]
+        #expect(item.payDayAdjustmentDays == "1,7")
+    }
+
+    @Test("BudgetItem empty adjustment weekdays returns nil")
+    func budgetItemEmptyAdjustmentWeekdays() {
+        let item = BudgetItem(
+            name: "Test", type: .income, amount: 100,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income
+        )
+        item.payDayAdjustmentWeekdays = []
+        #expect(item.payDayAdjustmentDays == nil)
+    }
+
+    // MARK: - DashboardSection
+
+    @Test("DashboardSection anchor encodes and decodes fixedDay")
+    func dashboardSectionFixedDayAnchor() {
+        let section = DashboardSection(
+            sectionType: .detailedWeekly,
+            anchor: .fixedDay(weekday: 5),
+            label: "Test"
+        )
+        let decoded = section.anchor
+        if case .fixedDay(let weekday) = decoded {
+            #expect(weekday == 5)
+        } else {
+            Issue.record("Expected fixedDay anchor")
+        }
+    }
+
+    @Test("DashboardSection anchor encodes and decodes linkedIncome")
+    func dashboardSectionLinkedIncomeAnchor() {
+        let testID = UUID()
+        let section = DashboardSection(
+            sectionType: .monthlySummary,
+            anchor: .linkedIncome(budgetItemID: testID),
+            label: "Monthly"
+        )
+        let decoded = section.anchor
+        if case .linkedIncome(let id) = decoded {
+            #expect(id == testID)
+        } else {
+            Issue.record("Expected linkedIncome anchor")
+        }
+    }
+
+    @Test("DashboardSection anchor encodes and decodes fixedDayOfMonth")
+    func dashboardSectionFixedDayOfMonthAnchor() {
+        let section = DashboardSection(
+            sectionType: .monthlySummary,
+            anchor: .fixedDayOfMonth(day: 15),
+            label: "Mid-month"
+        )
+        let decoded = section.anchor
+        if case .fixedDayOfMonth(let day) = decoded {
+            #expect(day == 15)
+        } else {
+            Issue.record("Expected fixedDayOfMonth anchor")
+        }
+    }
 }

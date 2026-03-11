@@ -7,6 +7,8 @@ enum RecordConversion {
     static let amountOverrideRecordType = "AmountOverride"
     static let occurrenceRecordType = "Occurrence"
     static let familyMemberRecordType = "FamilyMember"
+    static let dashboardSectionRecordType = "DashboardSection"
+    static let quickAdjustmentRecordType = "QuickAdjustment"
 
     // MARK: - CKRecord System Fields
 
@@ -79,6 +81,16 @@ enum RecordConversion {
             record["familyMemberIDs"] = memberIDs as CKRecordValue
         }
 
+        if let budgetReflectionRaw = item.budgetReflectionRaw {
+            record["budgetReflectionRaw"] = budgetReflectionRaw as CKRecordValue
+        }
+        if let payDayAdjustmentDays = item.payDayAdjustmentDays {
+            record["payDayAdjustmentDays"] = payDayAdjustmentDays as CKRecordValue
+        }
+        if let publicHolidayCountryCode = item.publicHolidayCountryCode {
+            record["publicHolidayCountryCode"] = publicHolidayCountryCode as CKRecordValue
+        }
+
         return record
     }
 
@@ -98,6 +110,9 @@ enum RecordConversion {
         item.sortOrder = record["sortOrder"] as? Int ?? 0
         item.showLast = (record["showLast"] as? Int ?? 0) == 1
         item.modifiedAt = record["modifiedAt"] as? Date ?? Date()
+        item.budgetReflectionRaw = record["budgetReflectionRaw"] as? String
+        item.payDayAdjustmentDays = record["payDayAdjustmentDays"] as? String
+        item.publicHolidayCountryCode = record["publicHolidayCountryCode"] as? String
         item.ckRecordData = encodeSystemFields(of: record)
     }
 
@@ -174,5 +189,69 @@ enum RecordConversion {
         record["name"] = member.name as CKRecordValue
         record["sortOrder"] = member.sortOrder as CKRecordValue
         return record
+    }
+
+    // MARK: - DashboardSection -> CKRecord
+
+    static func record(from section: DashboardSection, zoneID: CKRecordZone.ID) -> CKRecord {
+        let record = recordForModel(
+            recordType: dashboardSectionRecordType,
+            id: section.id,
+            ckRecordData: section.ckRecordData,
+            zoneID: zoneID
+        )
+        record["sectionTypeRaw"] = section.sectionTypeRaw as CKRecordValue
+        record["anchorRaw"] = section.anchorRaw as CKRecordValue
+        record["isEnabled"] = (section.isEnabled ? 1 : 0) as CKRecordValue
+        record["sortOrder"] = section.sortOrder as CKRecordValue
+        record["label"] = section.label as CKRecordValue
+        record["createdAt"] = section.createdAt as CKRecordValue
+        record["modifiedAt"] = section.modifiedAt as CKRecordValue
+        return record
+    }
+
+    static func applyRecord(_ record: CKRecord, to section: DashboardSection) {
+        section.sectionTypeRaw = record["sectionTypeRaw"] as? String ?? section.sectionTypeRaw
+        section.anchorRaw = record["anchorRaw"] as? String ?? section.anchorRaw
+        section.isEnabled = (record["isEnabled"] as? Int ?? 1) == 1
+        section.sortOrder = record["sortOrder"] as? Int ?? section.sortOrder
+        section.label = record["label"] as? String ?? section.label
+        section.modifiedAt = record["modifiedAt"] as? Date ?? Date()
+        section.ckRecordData = encodeSystemFields(of: record)
+    }
+
+    // MARK: - QuickAdjustment -> CKRecord
+
+    static func record(from adjustment: QuickAdjustment, zoneID: CKRecordZone.ID) -> CKRecord {
+        let record = recordForModel(
+            recordType: quickAdjustmentRecordType,
+            id: adjustment.id,
+            ckRecordData: adjustment.ckRecordData,
+            zoneID: zoneID
+        )
+        record["adjustmentTypeRaw"] = adjustment.adjustmentTypeRaw as CKRecordValue
+        record["date"] = adjustment.date as CKRecordValue
+        record["amount"] = NSDecimalNumber(decimal: adjustment.amount) as CKRecordValue
+        record["name"] = adjustment.name as CKRecordValue
+        record["currencyCode"] = adjustment.currencyCode as CKRecordValue
+        if let notes = adjustment.notes {
+            record["notes"] = notes as CKRecordValue
+        }
+        record["createdAt"] = adjustment.createdAt as CKRecordValue
+        record["modifiedAt"] = adjustment.modifiedAt as CKRecordValue
+        return record
+    }
+
+    static func applyRecord(_ record: CKRecord, to adjustment: QuickAdjustment) {
+        adjustment.adjustmentTypeRaw = record["adjustmentTypeRaw"] as? String ?? adjustment.adjustmentTypeRaw
+        adjustment.date = record["date"] as? Date ?? adjustment.date
+        if let amount = record["amount"] as? NSNumber {
+            adjustment.amount = amount.decimalValue
+        }
+        adjustment.name = record["name"] as? String ?? adjustment.name
+        adjustment.currencyCode = record["currencyCode"] as? String ?? adjustment.currencyCode
+        adjustment.notes = record["notes"] as? String
+        adjustment.modifiedAt = record["modifiedAt"] as? Date ?? Date()
+        adjustment.ckRecordData = encodeSystemFields(of: record)
     }
 }

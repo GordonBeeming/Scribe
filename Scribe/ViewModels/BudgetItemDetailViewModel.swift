@@ -15,6 +15,9 @@ final class BudgetItemDetailViewModel {
     var isActive: Bool = true
     var notes: String = ""
     var showLast: Bool = false
+    var budgetReflection: BudgetReflection = .paymentDate
+    var payDayAdjustmentWeekdays: Set<Int> = []
+    var publicHolidayCountryCode: String? = nil
     var selectedFamilyMemberIDs: Set<UUID> = []
 
     // Amount override
@@ -37,6 +40,9 @@ final class BudgetItemDetailViewModel {
         isActive = item.isActive
         notes = item.notes ?? ""
         showLast = item.showLast
+        budgetReflection = item.budgetReflection
+        payDayAdjustmentWeekdays = item.payDayAdjustmentWeekdays
+        publicHolidayCountryCode = item.publicHolidayCountryCode
         selectedFamilyMemberIDs = Set(item.familyMembers.map(\.id))
         isEditing = true
     }
@@ -53,6 +59,9 @@ final class BudgetItemDetailViewModel {
         item.isActive = isActive
         item.notes = notes.isEmpty ? nil : notes
         item.showLast = showLast
+        item.budgetReflection = budgetReflection
+        item.payDayAdjustmentWeekdays = payDayAdjustmentWeekdays
+        item.publicHolidayCountryCode = publicHolidayCountryCode
         item.modifiedAt = Date()
     }
 
@@ -72,7 +81,10 @@ final class BudgetItemDetailViewModel {
             category: category,
             isActive: isActive,
             notes: notes.isEmpty ? nil : notes,
-            showLast: showLast
+            showLast: showLast,
+            budgetReflection: budgetReflection,
+            payDayAdjustmentDays: payDayAdjustmentWeekdays.isEmpty ? nil : payDayAdjustmentWeekdays.sorted().map(String.init).joined(separator: ","),
+            publicHolidayCountryCode: publicHolidayCountryCode
         )
     }
 

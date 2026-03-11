@@ -12,9 +12,10 @@ struct PeriodView: View {
     @State private var selectedItem: BudgetItem?
     @State private var irregularConfirmItem: PeriodViewModel.DayItem?
     @State private var irregularConfirmDate: Date = Date()
+    @State private var holidays: Set<Date> = []
 
     private var days: [PeriodViewModel.DayData] {
-        viewModel.generateDays(budgetItems: activeItems, occurrences: occurrences)
+        viewModel.generateDays(budgetItems: activeItems, occurrences: occurrences, holidays: holidays)
     }
 
     var body: some View {
@@ -71,7 +72,26 @@ struct PeriodView: View {
                     scheduleNextIrregular(dayItem, nextDate: nextDate)
                 }
             }
+            .task {
+                await loadHolidays()
+                await ExchangeRateCache.shared.load()
+            }
         }
+    }
+
+    private func loadHolidays() async {
+        let countryCodes = Set(activeItems.compactMap(\.publicHolidayCountryCode))
+        guard !countryCodes.isEmpty else { return }
+        let calendar = Calendar.current
+        let year = calendar.component(.year, from: Date())
+        var allHolidays: Set<Date> = []
+        for code in countryCodes {
+            let dates = await HolidayService.shared.holidayDates(for: code, year: year)
+            allHolidays.formUnion(dates)
+            let nextDates = await HolidayService.shared.holidayDates(for: code, year: year + 1)
+            allHolidays.formUnion(nextDates)
+        }
+        holidays = allHolidays
     }
 
     private var dateRangeLabel: some View {
@@ -113,7 +133,8 @@ struct PeriodView: View {
                             item: item,
                             onConfirm: { confirmItem(item, on: day.date) },
                             onSkip: { skipItem(item, on: day.date) },
-                            onTap: { selectedItem = item.budgetItem }
+                            onTap: { selectedItem = item.budgetItem },
+                            onAdjustAmount: { newAmount in adjustItemAmount(item, newAmount: newAmount) }
                         )
                     }
                 } header: {
@@ -174,7 +195,8 @@ struct PeriodView: View {
                                 item: item,
                                 onConfirm: { confirmItem(item, on: day.date) },
                                 onSkip: { skipItem(item, on: day.date) },
-                                onTap: { selectedItem = item.budgetItem }
+                                onTap: { selectedItem = item.budgetItem },
+                                onAdjustAmount: { newAmount in adjustItemAmount(item, newAmount: newAmount) }
                             )
                         }
 
@@ -238,6 +260,13 @@ struct PeriodView: View {
         item.budgetItem.modifiedAt = Date()
         try? modelContext.save()
         SyncCoordinator.shared.pushChange(for: item.budgetItem.id)
+    }
+
+    private func adjustItemAmount(_ item: PeriodViewModel.DayItem, newAmount: Decimal) {
+        guard let occurrence = item.occurrence else { return }
+        occurrence.actualAmount = newAmount
+        try? modelContext.save()
+        SyncCoordinator.shared.pushChange(for: occurrence.id)
     }
 
     private func skipItem(_ item: PeriodViewModel.DayItem, on date: Date) {

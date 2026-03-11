@@ -41,12 +41,35 @@ final class PeriodViewModel {
         self.endDate = defaultRange.endDate(from: today)
     }
 
-    func generateDays(budgetItems: [BudgetItem], occurrences: [Occurrence]) -> [DayData] {
+    func generateDays(budgetItems: [BudgetItem], occurrences: [Occurrence], holidays: Set<Date> = []) -> [DayData] {
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: startDate)
         let end = calendar.startOfDay(for: endDate)
 
         guard start <= end else { return [] }
+
+        // Widen query range by ±1 day to catch income items that shift in/out
+        let queryStart = calendar.date(byAdding: .day, value: -1, to: start) ?? start
+        let queryEnd = calendar.date(byAdding: .day, value: 1, to: end) ?? end
+
+        // Collect all items with their display dates
+        struct PlacedItem {
+            let budgetItem: BudgetItem
+            let scheduledDate: Date
+            let displayDate: Date
+            let amount: Decimal
+        }
+
+        var placedItems: [PlacedItem] = []
+        for item in budgetItems where item.isActive {
+            let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)
+            for date in dates {
+                let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
+                guard displayDate >= start && displayDate <= end else { continue }
+                let amount = item.effectiveAmount(on: date)
+                placedItems.append(PlacedItem(budgetItem: item, scheduledDate: date, displayDate: displayDate, amount: amount))
+            }
+        }
 
         var days: [DayData] = []
         var current = start
@@ -54,26 +77,21 @@ final class PeriodViewModel {
         while current <= end {
             var dayItems: [DayItem] = []
 
-            for item in budgetItems where item.isActive {
-                let dates = DateCalculator.occurrenceDates(for: item, in: current...current)
-                for date in dates {
-                    let amount = item.effectiveAmount(on: date)
-                    let existingOccurrence = occurrences.first {
-                        $0.budgetItem?.id == item.id &&
-                        calendar.isDate($0.dueDate, inSameDayAs: date)
-                    }
-                    dayItems.append(DayItem(
-                        id: existingOccurrence?.id ?? UUID(),
-                        budgetItem: item,
-                        amount: amount,
-                        occurrence: existingOccurrence
-                    ))
+            for placed in placedItems where calendar.isDate(placed.displayDate, inSameDayAs: current) {
+                let existingOccurrence = occurrences.first {
+                    $0.budgetItem?.id == placed.budgetItem.id &&
+                    calendar.isDate($0.dueDate, inSameDayAs: placed.scheduledDate)
                 }
+                dayItems.append(DayItem(
+                    id: existingOccurrence?.id ?? UUID(),
+                    budgetItem: placed.budgetItem,
+                    amount: placed.amount,
+                    occurrence: existingOccurrence
+                ))
             }
 
             if !dayItems.isEmpty {
                 dayItems.sort { lhs, rhs in
-                    // Items with showLast go to the end
                     if lhs.budgetItem.showLast != rhs.budgetItem.showLast {
                         return !lhs.budgetItem.showLast
                     }

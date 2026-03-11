@@ -9,6 +9,8 @@ enum SharedModelContainer {
         AmountOverride.self,
         Occurrence.self,
         FamilyMember.self,
+        DashboardSection.self,
+        QuickAdjustment.self,
     ])
 
     static var sharedStoreURL: URL {

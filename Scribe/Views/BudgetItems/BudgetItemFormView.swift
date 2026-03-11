@@ -62,8 +62,57 @@ struct BudgetItemFormView: View {
                 }
 
                 if viewModel.itemType == .income {
-                    Section("Display") {
+                    Section("Income Settings") {
                         Toggle("Show Last in Day", isOn: $viewModel.showLast)
+
+                        Picker("Budget Reflection", selection: $viewModel.budgetReflection) {
+                            ForEach(BudgetReflection.allCases) { reflection in
+                                Text(reflection.displayName).tag(reflection)
+                            }
+                        }
+
+                        VStack(alignment: .leading) {
+                            Text("Pay Day Adjustments")
+                                .font(.subheadline)
+                            Text("Shift payment to previous day when landing on:")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            let weekdays = [(1, "Sun"), (2, "Mon"), (3, "Tue"), (4, "Wed"), (5, "Thu"), (6, "Fri"), (7, "Sat")]
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 8) {
+                                ForEach(weekdays, id: \.0) { day, name in
+                                    Toggle(name, isOn: Binding(
+                                        get: { viewModel.payDayAdjustmentWeekdays.contains(day) },
+                                        set: { selected in
+                                            if selected {
+                                                viewModel.payDayAdjustmentWeekdays.insert(day)
+                                            } else {
+                                                viewModel.payDayAdjustmentWeekdays.remove(day)
+                                            }
+                                        }
+                                    ))
+                                    .toggleStyle(.button)
+                                }
+                            }
+                        }
+
+                        NavigationLink {
+                            CountryPickerView(selectedCode: Binding(
+                                get: { viewModel.publicHolidayCountryCode },
+                                set: { viewModel.publicHolidayCountryCode = $0 }
+                            ))
+                        } label: {
+                            HStack {
+                                Text("Public Holiday Country")
+                                Spacer()
+                                if let code = viewModel.publicHolidayCountryCode {
+                                    Text(Locale.current.localizedString(forRegionCode: code) ?? code)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("None")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
                 }
 

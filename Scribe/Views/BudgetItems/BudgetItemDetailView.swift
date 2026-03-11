@@ -35,6 +35,29 @@ struct BudgetItemDetailView: View {
                 }
             }
 
+            if item.type == .income {
+                Section("Income Settings") {
+                    LabeledContent("Budget Reflection", value: item.budgetReflection.displayName)
+                    if !item.payDayAdjustmentWeekdays.isEmpty {
+                        let weekdayNames = [(1, "Sun"), (2, "Mon"), (3, "Tue"), (4, "Wed"), (5, "Thu"), (6, "Fri"), (7, "Sat")]
+                        let adjustmentNames = weekdayNames
+                            .filter { item.payDayAdjustmentWeekdays.contains($0.0) }
+                            .map(\.1)
+                            .joined(separator: ", ")
+                        LabeledContent("Pay Day Adjustments", value: adjustmentNames)
+                    } else {
+                        LabeledContent("Pay Day Adjustments", value: "None")
+                    }
+                    if let code = item.publicHolidayCountryCode {
+                        let countryName = Locale.current.localizedString(forRegionCode: code) ?? code
+                        LabeledContent("Holiday Country", value: "\(countryName) (\(code))")
+                    } else {
+                        LabeledContent("Holiday Country", value: "None")
+                    }
+                    LabeledContent("Show Last in Day", value: item.showLast ? "Yes" : "No")
+                }
+            }
+
             Section("Amount History") {
                 if item.amountOverrides.isEmpty {
                     Text("No amount changes recorded")

@@ -97,6 +97,22 @@ enum ItemCategory: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum BudgetReflection: String, Codable, CaseIterable, Identifiable {
+    case paymentDate
+    case dayAfter
+    case dayBefore
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .paymentDate: "Payment Date"
+        case .dayAfter: "Day After"
+        case .dayBefore: "Day Before"
+        }
+    }
+}
+
 @Model
 final class BudgetItem {
     var id: UUID
@@ -115,6 +131,9 @@ final class BudgetItem {
     var createdAt: Date
     var modifiedAt: Date
     var ckRecordData: Data?
+    var budgetReflectionRaw: String?
+    var payDayAdjustmentDays: String?
+    var publicHolidayCountryCode: String?
 
     @Relationship(deleteRule: .cascade, inverse: \AmountOverride.budgetItem)
     var amountOverrides: [AmountOverride]
@@ -139,6 +158,25 @@ final class BudgetItem {
         set { categoryRaw = newValue.rawValue }
     }
 
+    var budgetReflection: BudgetReflection {
+        get { BudgetReflection(rawValue: budgetReflectionRaw ?? "") ?? .paymentDate }
+        set { budgetReflectionRaw = newValue.rawValue }
+    }
+
+    var payDayAdjustmentWeekdays: Set<Int> {
+        get {
+            guard let raw = payDayAdjustmentDays, !raw.isEmpty else { return [] }
+            return Set(raw.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
+        }
+        set {
+            if newValue.isEmpty {
+                payDayAdjustmentDays = nil
+            } else {
+                payDayAdjustmentDays = newValue.sorted().map(String.init).joined(separator: ",")
+            }
+        }
+    }
+
     init(
         name: String,
         type: ItemType,
@@ -151,7 +189,10 @@ final class BudgetItem {
         isActive: Bool = true,
         notes: String? = nil,
         sortOrder: Int = 0,
-        showLast: Bool = false
+        showLast: Bool = false,
+        budgetReflection: BudgetReflection? = nil,
+        payDayAdjustmentDays: String? = nil,
+        publicHolidayCountryCode: String? = nil
     ) {
         self.id = UUID()
         self.name = name
@@ -166,6 +207,9 @@ final class BudgetItem {
         self.notes = notes
         self.sortOrder = sortOrder
         self.showLast = showLast
+        self.budgetReflectionRaw = budgetReflection?.rawValue
+        self.payDayAdjustmentDays = payDayAdjustmentDays
+        self.publicHolidayCountryCode = publicHolidayCountryCode
         self.createdAt = Date()
         self.modifiedAt = Date()
         self.amountOverrides = []

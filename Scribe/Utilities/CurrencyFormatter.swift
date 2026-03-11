@@ -39,6 +39,15 @@ struct CurrencyFormatter {
         case none
     }
 
+    /// Format a number without currency symbol (e.g. "10.00")
+    static func formatNumber(_ amount: Decimal) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: amount as NSDecimalNumber) ?? "\(amount)"
+    }
+
     private static func abs(_ value: Decimal) -> Decimal {
         value < 0 ? -value : value
     }

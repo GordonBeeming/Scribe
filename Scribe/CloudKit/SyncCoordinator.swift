@@ -139,6 +139,16 @@ final class SyncCoordinator: @unchecked Sendable {
                 CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
             })
         }
+        if let sections = try? bgContext.fetch(FetchDescriptor<DashboardSection>()) {
+            recordIDs.append(contentsOf: sections.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+        }
+        if let adjustments = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>()) {
+            recordIDs.append(contentsOf: adjustments.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+        }
 
         if !recordIDs.isEmpty {
             // Ensure zone is saved first
@@ -237,6 +247,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     recordsToSave.append(RecordConversion.record(from: occurrence, zoneID: zoneID))
                 } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
                     recordsToSave.append(RecordConversion.record(from: member, zoneID: zoneID))
+                } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
+                    recordsToSave.append(RecordConversion.record(from: section, zoneID: zoneID))
+                } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
+                    recordsToSave.append(RecordConversion.record(from: adjustment, zoneID: zoneID))
                 } else {
                     // Object deleted locally before send — remove from pending
                     logger.info("Record \(recordID.recordName) not found locally, removing from pending")
@@ -345,6 +359,9 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 item.createdAt = record["createdAt"] as? Date ?? Date()
                 item.modifiedAt = record["modifiedAt"] as? Date ?? Date()
                 item.ckRecordData = ckData
+                item.budgetReflectionRaw = record["budgetReflectionRaw"] as? String
+                item.payDayAdjustmentDays = record["payDayAdjustmentDays"] as? String
+                item.publicHolidayCountryCode = record["publicHolidayCountryCode"] as? String
                 context.insert(item)
             }
 
@@ -424,6 +441,60 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 context.insert(member)
             }
 
+        case RecordConversion.dashboardSectionRecordType:
+            let predicate = #Predicate<DashboardSection> { $0.id == uuid }
+            if let existing = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: predicate)).first {
+                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
+                if remoteModified >= existing.modifiedAt {
+                    RecordConversion.applyRecord(record, to: existing)
+                }
+                existing.ckRecordData = ckData
+            } else {
+                let section = DashboardSection(
+                    sectionType: DashboardSectionType(rawValue: record["sectionTypeRaw"] as? String ?? "detailedWeekly") ?? .detailedWeekly,
+                    anchor: {
+                        if let anchorRaw = record["anchorRaw"] as? String,
+                           let data = anchorRaw.data(using: .utf8),
+                           let decoded = try? JSONDecoder().decode(DashboardSectionAnchor.self, from: data) {
+                            return decoded
+                        }
+                        return .fixedDay(weekday: 2)
+                    }(),
+                    isEnabled: (record["isEnabled"] as? Int ?? 1) == 1,
+                    sortOrder: record["sortOrder"] as? Int ?? 0,
+                    label: record["label"] as? String ?? "Section"
+                )
+                section.id = uuid
+                section.createdAt = record["createdAt"] as? Date ?? Date()
+                section.modifiedAt = record["modifiedAt"] as? Date ?? Date()
+                section.ckRecordData = ckData
+                context.insert(section)
+            }
+
+        case RecordConversion.quickAdjustmentRecordType:
+            let predicate = #Predicate<QuickAdjustment> { $0.id == uuid }
+            if let existing = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: predicate)).first {
+                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
+                if remoteModified >= existing.modifiedAt {
+                    RecordConversion.applyRecord(record, to: existing)
+                }
+                existing.ckRecordData = ckData
+            } else {
+                let adjustment = QuickAdjustment(
+                    type: QuickAdjustmentType(rawValue: record["adjustmentTypeRaw"] as? String ?? "expense") ?? .expense,
+                    date: record["date"] as? Date ?? Date(),
+                    amount: (record["amount"] as? NSNumber)?.decimalValue ?? 0,
+                    name: record["name"] as? String ?? "Unknown",
+                    currencyCode: record["currencyCode"] as? String ?? "AUD",
+                    notes: record["notes"] as? String
+                )
+                adjustment.id = uuid
+                adjustment.createdAt = record["createdAt"] as? Date ?? Date()
+                adjustment.modifiedAt = record["modifiedAt"] as? Date ?? Date()
+                adjustment.ckRecordData = ckData
+                context.insert(adjustment)
+            }
+
         default:
             break
         }
@@ -452,6 +523,16 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.familyMemberRecordType:
             let predicate = #Predicate<FamilyMember> { $0.id == uuid }
             if let item = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: predicate)).first {
+                context.delete(item)
+            }
+        case RecordConversion.dashboardSectionRecordType:
+            let predicate = #Predicate<DashboardSection> { $0.id == uuid }
+            if let item = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: predicate)).first {
+                context.delete(item)
+            }
+        case RecordConversion.quickAdjustmentRecordType:
+            let predicate = #Predicate<QuickAdjustment> { $0.id == uuid }
+            if let item = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: predicate)).first {
                 context.delete(item)
             }
         default:
@@ -522,6 +603,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             occurrence.ckRecordData = ckData
         } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
             member.ckRecordData = ckData
+        } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
+            section.ckRecordData = ckData
+        } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
+            adjustment.ckRecordData = ckData
         }
 
         try? bgContext.save()
@@ -542,6 +627,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             occurrence.ckRecordData = nil
         } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
             member.ckRecordData = nil
+        } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
+            section.ckRecordData = nil
+        } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
+            adjustment.ckRecordData = nil
         }
 
         try? bgContext.save()

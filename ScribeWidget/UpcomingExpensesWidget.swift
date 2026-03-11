@@ -115,16 +115,23 @@ struct UpcomingExpensesProvider: AppIntentTimelineProvider {
             var totalIncome: Decimal = 0
             var totalExpenses: Decimal = 0
 
+            // Widen query range by ±1 day to catch items that shift in/out due to adjustments
+            let queryStart = calendar.date(byAdding: .day, value: -1, to: today) ?? today
+            let queryEnd = calendar.date(byAdding: .day, value: 1, to: endDate) ?? endDate
+
             for item in budgetItems {
-                let dates = DateCalculator.occurrenceDates(for: item, in: today...endDate)
+                let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)
                 for date in dates {
+                    // Apply pay day adjustments (weekday shifts only, no async holiday lookup in widget)
+                    let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: [])
+                    guard displayDate >= today && displayDate <= endDate else { continue }
                     let amount = item.effectiveAmount(on: date)
                     widgetItems.append(WidgetExpenseItem(
                         name: item.name,
                         amount: amount,
                         currencyCode: item.currencyCode,
                         isIncome: item.type == .income,
-                        dueDate: date
+                        dueDate: displayDate
                     ))
                     if item.type == .income {
                         totalIncome += amount
