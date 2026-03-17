@@ -1,13 +1,18 @@
 import SwiftUI
 
 struct CountryPickerView: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var selectedCode: String?
+    @State private var localSelection: String?
+    var onSelect: (String?) -> Void
     @State private var countries: [AvailableCountry] = []
     @State private var searchText = ""
     @State private var isLoading = true
     @State private var loadFailed = false
     @State private var loadID = UUID()
+
+    init(selectedCode: String?, onSelect: @escaping (String?) -> Void) {
+        self._localSelection = State(initialValue: selectedCode)
+        self.onSelect = onSelect
+    }
 
     private var filteredCountries: [AvailableCountry] {
         if searchText.isEmpty {
@@ -23,13 +28,13 @@ struct CountryPickerView: View {
     var body: some View {
         List {
             Button {
-                selectedCode = nil
-                dismiss()
+                localSelection = nil
+                onSelect(nil)
             } label: {
                 HStack {
                     Text("None")
                     Spacer()
-                    if selectedCode == nil {
+                    if localSelection == nil {
                         Image(systemName: "checkmark")
                             .foregroundStyle(Color.accentColor)
                     }
@@ -53,13 +58,13 @@ struct CountryPickerView: View {
             } else {
                 ForEach(filteredCountries) { country in
                     Button {
-                        selectedCode = country.countryCode
-                        dismiss()
+                        localSelection = country.countryCode
+                        onSelect(country.countryCode)
                     } label: {
                         HStack {
                             Text("\(country.name) (\(country.countryCode))")
                             Spacer()
-                            if selectedCode == country.countryCode {
+                            if localSelection == country.countryCode {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(Color.accentColor)
                             }
@@ -70,6 +75,7 @@ struct CountryPickerView: View {
             }
         }
         .navigationTitle("Holiday Country")
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search countries")
         .task(id: loadID) {
             isLoading = true
