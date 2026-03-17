@@ -75,9 +75,14 @@ actor HolidayService {
 
     private var cachedCountries: [AvailableCountry]?
 
-    func availableCountries() async -> [AvailableCountry] {
+    struct CountryResult: Sendable {
+        let countries: [AvailableCountry]
+        let failed: Bool
+    }
+
+    func availableCountries() async -> CountryResult {
         if let cached = cachedCountries {
-            return cached
+            return CountryResult(countries: cached, failed: false)
         }
 
         // Try disk cache
@@ -88,21 +93,25 @@ actor HolidayService {
            Date().timeIntervalSince(timestamp) < cacheTTL,
            let countries = try? JSONDecoder().decode([AvailableCountry].self, from: data) {
             cachedCountries = countries
-            return countries
+            return CountryResult(countries: countries, failed: false)
         }
 
         // Fetch from API
-        guard let url = URL(string: "https://date.nager.at/api/v3/AvailableCountries") else { return [] }
+        guard let url = URL(string: "https://date.nager.at/api/v3/AvailableCountries") else {
+            return CountryResult(countries: [], failed: true)
+        }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return [] }
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                return CountryResult(countries: [], failed: true)
+            }
             let countries = try JSONDecoder().decode([AvailableCountry].self, from: data)
             cachedCountries = countries
             defaults?.set(data, forKey: key)
             defaults?.set(Date(), forKey: tsKey)
-            return countries
+            return CountryResult(countries: countries, failed: false)
         } catch {
-            return []
+            return CountryResult(countries: [], failed: true)
         }
     }
 

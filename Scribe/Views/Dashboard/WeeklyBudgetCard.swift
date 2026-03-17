@@ -47,8 +47,13 @@ struct WeeklyBudgetCard: View {
                                 .font(.caption2)
                                 .foregroundStyle(ScribeTheme.secondaryText)
                             Text(CurrencyFormatter.format(group.closingBalance, currencyCode: "AUD", signStyle: .automatic))
-                                .font(.subheadline.monospacedDigit().bold())
+                                .font(.title3.monospacedDigit().bold())
                                 .foregroundStyle(group.closingBalance >= 0 ? ScribeTheme.success : ScribeTheme.error)
+                            if group.totalCount > 0 {
+                                Text("\(group.confirmedCount)/\(group.totalCount) confirmed")
+                                    .font(.caption2)
+                                    .foregroundStyle(ScribeTheme.secondaryText)
+                            }
                         }
                     }
 
@@ -145,6 +150,20 @@ struct WeeklyBudgetCard: View {
                         .foregroundStyle(adjustment.adjustmentType == .income ? ScribeTheme.success : ScribeTheme.error)
                     }
                     .padding(.vertical, 2)
+                }
+
+                if group.pendingExpenses > 0 {
+                    Divider()
+                    HStack {
+                        Text("Remaining")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(ScribeTheme.primaryText)
+                        Spacer()
+                        Text(CurrencyFormatter.format(group.pendingExpenses, currencyCode: "AUD", signStyle: .none))
+                            .font(.subheadline.monospacedDigit().bold())
+                            .foregroundStyle(ScribeTheme.error)
+                    }
+                    .padding(.vertical, 4)
                 }
 
                 if group.hasBalanceReset {

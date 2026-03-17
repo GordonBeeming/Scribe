@@ -96,6 +96,8 @@ targets:
         group: Shared/CloudKit
       - path: Scribe/Services
         group: Shared/Services
+      - path: Scribe/ViewModels
+        group: Shared/ViewModels
     info:
       path: ScribeWatch/Info.plist
       properties:

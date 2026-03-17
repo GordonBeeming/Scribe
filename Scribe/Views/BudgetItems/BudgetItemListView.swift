@@ -146,11 +146,13 @@ private struct FilterChip: View {
         Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? ScribeTheme.primaryText : ScribeTheme.secondaryText)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
+                .background(isSelected ? ScribeTheme.accent.opacity(0.25) : Color.clear, in: .capsule)
         }
         .glassEffect(.regular.interactive(), in: .capsule)
-        .opacity(isSelected ? 1.0 : 0.6)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
