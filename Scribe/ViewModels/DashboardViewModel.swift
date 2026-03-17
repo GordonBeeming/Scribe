@@ -225,8 +225,8 @@ final class DashboardViewModel {
 
         var groups: [WeekGroup] = []
         for pg in preliminaryGroups {
-            let totalIncome = pg.items.filter { $0.budgetItem.type == .income }.reduce(Decimal.zero) { $0 + $1.amount }
-            let totalExpenses = pg.items.filter { $0.budgetItem.type == .expense }.reduce(Decimal.zero) { $0 + $1.amount }
+            let totalIncome = pg.items.filter { $0.budgetItem.type == .income }.reduce(Decimal.zero) { $0 + $1.effectiveBalanceAmount }
+            let totalExpenses = pg.items.filter { $0.budgetItem.type == .expense }.reduce(Decimal.zero) { $0 + $1.effectiveBalanceAmount }
             let adjIncome = pg.adjustments.filter { $0.adjustmentType == .income }.reduce(Decimal.zero) { $0 + $1.amount }
             let adjExpenses = pg.adjustments.filter { $0.adjustmentType == .expense }.reduce(Decimal.zero) { $0 + $1.amount }
 
