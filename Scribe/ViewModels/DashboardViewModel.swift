@@ -86,7 +86,7 @@ final class DashboardViewModel {
     // MARK: - Weekly Grouping
 
     struct WeekGroup: Identifiable {
-        let id: UUID
+        var id: Date { startDate }
         let label: String
         let startDate: Date
         let endDate: Date
@@ -247,7 +247,6 @@ final class DashboardViewModel {
             let label = "\(formatter.string(from: pg.start)) – \(formatter.string(from: pg.end))"
 
             groups.append(WeekGroup(
-                id: UUID(),
                 label: label,
                 startDate: pg.start,
                 endDate: pg.end,
