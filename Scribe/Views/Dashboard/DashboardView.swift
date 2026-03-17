@@ -198,18 +198,25 @@ struct DashboardView: View {
         let today = calendar.startOfDay(for: Date())
         guard let cutoffDate = calendar.date(byAdding: .day, value: -days, to: today) else { return }
 
+        // Pre-index existing occurrences by (budgetItemID, startOfDay) for O(1) lookup
+        var existingOccurrenceKeys: Set<String> = []
+        for occ in occurrences {
+            guard let itemID = occ.budgetItem?.id else { continue }
+            let dayKey = calendar.startOfDay(for: occ.dueDate)
+            existingOccurrenceKeys.insert("\(itemID)_\(dayKey.timeIntervalSince1970)")
+        }
+
+        var insertedIDs: [UUID] = []
+
         for item in activeItems where item.frequency != .irregular {
-            // Check occurrences going back further than the lookback window
             guard let scanStart = calendar.date(byAdding: .day, value: -30, to: cutoffDate) else { continue }
             let dates = DateCalculator.occurrenceDates(for: item, in: scanStart...cutoffDate)
 
             for date in dates where date < cutoffDate {
-                let hasOccurrence = occurrences.contains { occ in
-                    occ.budgetItem?.id == item.id &&
-                    calendar.isDate(occ.dueDate, inSameDayAs: date)
-                }
+                let dayKey = calendar.startOfDay(for: date)
+                let key = "\(item.id)_\(dayKey.timeIntervalSince1970)"
 
-                if !hasOccurrence {
+                if !existingOccurrenceKeys.contains(key) {
                     let occurrence = Occurrence(
                         dueDate: date,
                         expectedAmount: item.effectiveAmount(on: date),
@@ -218,12 +225,21 @@ struct DashboardView: View {
                         budgetItem: item
                     )
                     modelContext.insert(occurrence)
-                    SyncCoordinator.shared.pushChange(for: occurrence.id)
+                    insertedIDs.append(occurrence.id)
+                    existingOccurrenceKeys.insert(key)
                 }
             }
         }
 
-        try? modelContext.save()
+        guard !insertedIDs.isEmpty else { return }
+        do {
+            try modelContext.save()
+            for id in insertedIDs {
+                SyncCoordinator.shared.pushChange(for: id)
+            }
+        } catch {
+            // Save failed — don't push unsaved records
+        }
     }
 
     private func skipOccurrence(_ item: DashboardViewModel.UpcomingItem) {

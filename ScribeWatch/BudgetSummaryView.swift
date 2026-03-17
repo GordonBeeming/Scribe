@@ -94,16 +94,23 @@ struct BudgetSummaryView: View {
     }
 
     private func watchItemRow(_ item: DashboardViewModel.UpcomingItem) -> some View {
-        HStack {
-            Image(systemName: item.isConfirmed ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(item.isConfirmed ? .green : .secondary)
+        let iconName = item.isConfirmed ? "checkmark.circle.fill"
+            : item.isSkipped ? "arrow.uturn.right.circle"
+            : "circle"
+        let iconColor: Color = item.isConfirmed ? .green
+            : item.isSkipped ? .secondary
+            : .secondary
+
+        return HStack {
+            Image(systemName: iconName)
+                .foregroundStyle(iconColor)
                 .font(.caption2)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.budgetItem.name)
                     .font(.caption2)
                     .lineLimit(1)
-                    .strikethrough(item.isConfirmed)
+                    .strikethrough(item.isConfirmed || item.isSkipped)
                 Text(item.dueDate, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)

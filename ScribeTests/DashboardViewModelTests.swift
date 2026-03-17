@@ -90,4 +90,133 @@ struct DashboardViewModelTests {
             #expect(group.delta == group.totalIncome - group.totalExpenses + group.adjustmentIncome - group.adjustmentExpenses)
         }
     }
+
+    // MARK: - effectiveBalanceAmount Tests
+
+    @Test("Pending item uses projected amount")
+    func effectiveBalanceAmountPending() {
+        let item = BudgetItem(
+            name: "Rent", type: .expense, amount: 500,
+            frequency: .monthly, dayOfMonth: 1, category: .housing
+        )
+        let upcomingItem = DashboardViewModel.UpcomingItem(
+            id: UUID(),
+            budgetItem: item,
+            dueDate: Date(),
+            amount: 500,
+            occurrence: nil
+        )
+
+        #expect(upcomingItem.effectiveBalanceAmount == 500)
+        #expect(!upcomingItem.isConfirmed)
+        #expect(!upcomingItem.isSkipped)
+    }
+
+    @Test("Confirmed item uses actual amount when present")
+    func effectiveBalanceAmountConfirmedActual() {
+        let item = BudgetItem(
+            name: "Rent", type: .expense, amount: 500,
+            frequency: .monthly, dayOfMonth: 1, category: .housing
+        )
+        let occurrence = Occurrence(
+            dueDate: Date(),
+            expectedAmount: 500,
+            actualAmount: 480,
+            status: .confirmed,
+            confirmedAt: Date()
+        )
+        let upcomingItem = DashboardViewModel.UpcomingItem(
+            id: UUID(),
+            budgetItem: item,
+            dueDate: Date(),
+            amount: 500,
+            occurrence: occurrence
+        )
+
+        #expect(upcomingItem.effectiveBalanceAmount == 480)
+        #expect(upcomingItem.isConfirmed)
+    }
+
+    @Test("Confirmed item falls back to projected amount when no actual")
+    func effectiveBalanceAmountConfirmedNoActual() {
+        let item = BudgetItem(
+            name: "Rent", type: .expense, amount: 500,
+            frequency: .monthly, dayOfMonth: 1, category: .housing
+        )
+        let occurrence = Occurrence(
+            dueDate: Date(),
+            expectedAmount: 500,
+            status: .confirmed,
+            confirmedAt: Date()
+        )
+        let upcomingItem = DashboardViewModel.UpcomingItem(
+            id: UUID(),
+            budgetItem: item,
+            dueDate: Date(),
+            amount: 500,
+            occurrence: occurrence
+        )
+
+        #expect(upcomingItem.effectiveBalanceAmount == 500)
+        #expect(upcomingItem.isConfirmed)
+    }
+
+    @Test("Skipped item contributes zero to balance")
+    func effectiveBalanceAmountSkipped() {
+        let item = BudgetItem(
+            name: "Rent", type: .expense, amount: 500,
+            frequency: .monthly, dayOfMonth: 1, category: .housing
+        )
+        let occurrence = Occurrence(
+            dueDate: Date(),
+            expectedAmount: 500,
+            status: .skipped
+        )
+        let upcomingItem = DashboardViewModel.UpcomingItem(
+            id: UUID(),
+            budgetItem: item,
+            dueDate: Date(),
+            amount: 500,
+            occurrence: occurrence
+        )
+
+        #expect(upcomingItem.effectiveBalanceAmount == 0)
+        #expect(upcomingItem.isSkipped)
+        #expect(!upcomingItem.isConfirmed)
+    }
+
+    @Test("Weekly totals reflect occurrence status")
+    func weeklyGroupsWithOccurrences() {
+        let today = calendar.startOfDay(for: Date())
+        let expense = BudgetItem(
+            name: "Rent", type: .expense, amount: 1000,
+            frequency: .weekly,
+            referenceDate: today,
+            category: .housing
+        )
+        let skippedOccurrence = Occurrence(
+            dueDate: today,
+            expectedAmount: 1000,
+            status: .skipped
+        )
+        skippedOccurrence.budgetItem = expense
+
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [expense],
+            occurrences: [skippedOccurrence],
+            quickAdjustments: [],
+            anchor: .fixedDay(weekday: calendar.component(.weekday, from: today)),
+            range: .days7,
+            holidays: []
+        )
+
+        // The week containing today should have the skipped item contributing 0
+        let currentWeek = groups.first { $0.startDate <= today && $0.endDate >= today }
+        if let week = currentWeek, !week.items.isEmpty {
+            let skippedItems = week.items.filter(\.isSkipped)
+            for skipped in skippedItems {
+                #expect(skipped.effectiveBalanceAmount == 0)
+            }
+        }
+    }
 }

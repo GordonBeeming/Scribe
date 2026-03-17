@@ -60,8 +60,18 @@ struct PeriodView: View {
                 DateRangePickerSheet(
                     startDate: $viewModel.startDate,
                     endDate: $viewModel.endDate,
-                    onQuickRange: { viewModel.setQuickRange($0) }
+                    onQuickRange: { range in
+                        selectedQuickRange = range
+                        viewModel.setQuickRange(range)
+                    }
                 )
+            }
+            .onChange(of: viewModel.startDate) {
+                // Clear pill selection when dates are manually edited
+                selectedQuickRange = nil
+            }
+            .onChange(of: viewModel.endDate) {
+                selectedQuickRange = nil
             }
             .sheet(item: $selectedItem) { item in
                 NavigationStack {

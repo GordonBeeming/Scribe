@@ -66,6 +66,7 @@ final class SettingsViewModel {
     var lookbackDays: LookbackDays {
         get {
             access(keyPath: \.lookbackDays)
+            guard Self.defaults?.object(forKey: "lookbackDays") != nil else { return .days5 }
             let raw = Self.defaults?.integer(forKey: "lookbackDays") ?? 5
             return LookbackDays(rawValue: raw) ?? .days5
         }
