@@ -13,6 +13,7 @@ struct PeriodView: View {
     @State private var irregularConfirmItem: PeriodViewModel.DayItem?
     @State private var irregularConfirmDate: Date = Date()
     @State private var holidays: Set<Date> = []
+    @State private var selectedQuickRange: PeriodViewModel.QuickRange?
 
     private var days: [PeriodViewModel.DayData] {
         viewModel.generateDays(budgetItems: activeItems, occurrences: occurrences, holidays: holidays)
@@ -104,13 +105,19 @@ struct PeriodView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(PeriodViewModel.QuickRange.allCases) { range in
-                    Button(range.rawValue) {
+                    Button {
+                        selectedQuickRange = range
                         viewModel.setQuickRange(range)
+                    } label: {
+                        Text(range.rawValue)
+                            .font(.subheadline.weight(selectedQuickRange == range ? .semibold : .regular))
+                            .foregroundStyle(selectedQuickRange == range ? ScribeTheme.primaryText : ScribeTheme.secondaryText)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(selectedQuickRange == range ? ScribeTheme.accent.opacity(0.25) : Color.clear, in: .capsule)
                     }
-                    .font(.subheadline)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
                     .glassEffect(.regular.interactive(), in: .capsule)
+                    .accessibilityAddTraits(selectedQuickRange == range ? .isSelected : [])
                 }
             }
             .padding(.horizontal)
