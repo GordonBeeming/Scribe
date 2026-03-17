@@ -152,6 +152,20 @@ struct WeeklyBudgetCard: View {
                     .padding(.vertical, 2)
                 }
 
+                if group.pendingExpenses > 0 {
+                    Divider()
+                    HStack {
+                        Text("Remaining")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(ScribeTheme.primaryText)
+                        Spacer()
+                        Text(CurrencyFormatter.format(group.pendingExpenses, currencyCode: "AUD", signStyle: .none))
+                            .font(.subheadline.monospacedDigit().bold())
+                            .foregroundStyle(ScribeTheme.error)
+                    }
+                    .padding(.vertical, 4)
+                }
+
                 if group.hasBalanceReset {
                     HStack {
                         Image(systemName: "arrow.triangle.2.circlepath")

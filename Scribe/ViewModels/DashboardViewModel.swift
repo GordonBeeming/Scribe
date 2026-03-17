@@ -102,6 +102,12 @@ final class DashboardViewModel {
         let confirmedCount: Int
         let totalCount: Int
         var delta: Decimal { totalIncome - totalExpenses + adjustmentIncome - adjustmentExpenses }
+
+        /// Total amount of pending (unconfirmed, not skipped) expenses still to come
+        var pendingExpenses: Decimal {
+            items.filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
+                .reduce(Decimal.zero) { $0 + $1.amount }
+        }
     }
 
     struct MonthlySummary: Identifiable {
