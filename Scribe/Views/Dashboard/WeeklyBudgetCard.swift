@@ -47,8 +47,13 @@ struct WeeklyBudgetCard: View {
                                 .font(.caption2)
                                 .foregroundStyle(ScribeTheme.secondaryText)
                             Text(CurrencyFormatter.format(group.closingBalance, currencyCode: "AUD", signStyle: .automatic))
-                                .font(.subheadline.monospacedDigit().bold())
+                                .font(.title3.monospacedDigit().bold())
                                 .foregroundStyle(group.closingBalance >= 0 ? ScribeTheme.success : ScribeTheme.error)
+                            if group.totalCount > 0 {
+                                Text("\(group.confirmedCount)/\(group.totalCount) confirmed")
+                                    .font(.caption2)
+                                    .foregroundStyle(ScribeTheme.secondaryText)
+                            }
                         }
                     }
 

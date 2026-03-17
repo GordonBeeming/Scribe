@@ -14,6 +14,10 @@ struct DashboardView: View {
     @State private var irregularConfirmItem: DashboardViewModel.UpcomingItem?
     @State private var holidays: Set<Date> = []
 
+    private var lookbackDays: Int {
+        SettingsViewModel.currentLookbackDays()
+    }
+
     private func adjustAmount(_ item: DashboardViewModel.UpcomingItem, newAmount: Decimal) {
         guard let occurrence = item.occurrence else { return }
         occurrence.actualAmount = newAmount
@@ -38,7 +42,8 @@ struct DashboardView: View {
                             UpcomingExpensesCard(
                                 items: viewModel.upcomingItems(
                                     budgetItems: activeItems,
-                                    occurrences: occurrences
+                                    occurrences: occurrences,
+                                    lookbackDays: lookbackDays
                                 ),
                                 onConfirm: confirmOccurrence,
                                 onSkip: skipOccurrence,
@@ -97,6 +102,7 @@ struct DashboardView: View {
             .task {
                 await loadHolidays()
                 await ExchangeRateCache.shared.load()
+                autoConfirmOldItems()
             }
             .navigationTitle("Scribe")
             .sheet(item: $selectedItem) { item in
@@ -181,6 +187,43 @@ struct DashboardView: View {
             allHolidays.formUnion(nextDates)
         }
         holidays = allHolidays
+    }
+
+    /// Auto-confirm items older than the lookback window
+    private func autoConfirmOldItems() {
+        let days = lookbackDays
+        guard days > 0 else { return }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let cutoffDate = calendar.date(byAdding: .day, value: -days, to: today) else { return }
+
+        for item in activeItems where item.frequency != .irregular {
+            // Check occurrences going back further than the lookback window
+            guard let scanStart = calendar.date(byAdding: .day, value: -30, to: cutoffDate) else { continue }
+            let dates = DateCalculator.occurrenceDates(for: item, in: scanStart...cutoffDate)
+
+            for date in dates where date < cutoffDate {
+                let hasOccurrence = occurrences.contains { occ in
+                    occ.budgetItem?.id == item.id &&
+                    calendar.isDate(occ.dueDate, inSameDayAs: date)
+                }
+
+                if !hasOccurrence {
+                    let occurrence = Occurrence(
+                        dueDate: date,
+                        expectedAmount: item.effectiveAmount(on: date),
+                        status: .confirmed,
+                        confirmedAt: Date(),
+                        budgetItem: item
+                    )
+                    modelContext.insert(occurrence)
+                    SyncCoordinator.shared.pushChange(for: occurrence.id)
+                }
+            }
+        }
+
+        try? modelContext.save()
     }
 
     private func skipOccurrence(_ item: DashboardViewModel.UpcomingItem) {

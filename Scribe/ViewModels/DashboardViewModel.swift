@@ -16,11 +16,23 @@ final class DashboardViewModel {
         var isConfirmed: Bool {
             occurrence?.status == .confirmed
         }
+
+        var isSkipped: Bool {
+            occurrence?.status == .skipped
+        }
+
+        /// Amount used for balance calculation: actual if confirmed, 0 if skipped, projected if pending
+        var effectiveBalanceAmount: Decimal {
+            if isSkipped { return 0 }
+            if isConfirmed { return occurrence?.actualAmount ?? amount }
+            return amount
+        }
     }
 
-    func upcomingItems(budgetItems: [BudgetItem], occurrences: [Occurrence]) -> [UpcomingItem] {
+    func upcomingItems(budgetItems: [BudgetItem], occurrences: [Occurrence], lookbackDays: Int = 0) -> [UpcomingItem] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
+        let startDate = calendar.date(byAdding: .day, value: -lookbackDays, to: today) ?? today
         guard let endDate = calendar.date(byAdding: .day, value: upcomingDays, to: today) else {
             return []
         }
@@ -28,7 +40,7 @@ final class DashboardViewModel {
         var items: [UpcomingItem] = []
 
         for budgetItem in budgetItems where budgetItem.isActive {
-            let dates = DateCalculator.occurrenceDates(for: budgetItem, in: today...endDate)
+            let dates = DateCalculator.occurrenceDates(for: budgetItem, in: startDate...endDate)
             for date in dates {
                 let amount = budgetItem.effectiveAmount(on: date)
                 let existingOccurrence = occurrences.first {
@@ -87,6 +99,8 @@ final class DashboardViewModel {
         let carryOver: Decimal
         let closingBalance: Decimal
         let hasBalanceReset: Bool
+        let confirmedCount: Int
+        let totalCount: Int
         var delta: Decimal { totalIncome - totalExpenses + adjustmentIncome - adjustmentExpenses }
     }
 
@@ -239,7 +253,9 @@ final class DashboardViewModel {
                 adjustmentExpenses: adjExpenses,
                 carryOver: carryOver,
                 closingBalance: closingBalance,
-                hasBalanceReset: hasReset
+                hasBalanceReset: hasReset,
+                confirmedCount: pg.items.filter(\.isConfirmed).count,
+                totalCount: pg.items.count
             ))
 
             runningBalance = closingBalance

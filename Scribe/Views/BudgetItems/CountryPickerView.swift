@@ -6,6 +6,8 @@ struct CountryPickerView: View {
     @State private var countries: [AvailableCountry] = []
     @State private var searchText = ""
     @State private var isLoading = true
+    @State private var loadFailed = false
+    @State private var loadID = UUID()
 
     private var filteredCountries: [AvailableCountry] {
         if searchText.isEmpty {
@@ -37,6 +39,17 @@ struct CountryPickerView: View {
 
             if isLoading {
                 ProgressView("Loading countries...")
+            } else if loadFailed {
+                VStack(spacing: 8) {
+                    Text("Failed to load countries")
+                        .foregroundStyle(.secondary)
+                    Button("Retry") {
+                        loadID = UUID()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
             } else {
                 ForEach(filteredCountries) { country in
                     Button {
@@ -58,9 +71,12 @@ struct CountryPickerView: View {
         }
         .navigationTitle("Holiday Country")
         .searchable(text: $searchText, prompt: "Search countries")
-        .task {
-            let fetched = await HolidayService.shared.availableCountries()
-            countries = fetched.sorted { $0.name < $1.name }
+        .task(id: loadID) {
+            isLoading = true
+            loadFailed = false
+            let result = await HolidayService.shared.availableCountries()
+            countries = result.countries.sorted { $0.name < $1.name }
+            loadFailed = result.failed && result.countries.isEmpty
             isLoading = false
         }
     }

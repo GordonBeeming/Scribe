@@ -37,9 +37,44 @@ enum DefaultRange: String, CaseIterable, Identifiable {
     }
 }
 
+enum LookbackDays: Int, CaseIterable, Identifiable {
+    case days0 = 0
+    case days1 = 1
+    case days2 = 2
+    case days3 = 3
+    case days5 = 5
+    case days7 = 7
+
+    var id: Int { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .days0: "None"
+        case .days1: "1 day"
+        case .days2: "2 days"
+        case .days3: "3 days"
+        case .days5: "5 days"
+        case .days7: "7 days"
+        }
+    }
+}
+
 @Observable
 final class SettingsViewModel {
     nonisolated(unsafe) private static let defaults = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")
+
+    var lookbackDays: LookbackDays {
+        get {
+            access(keyPath: \.lookbackDays)
+            let raw = Self.defaults?.integer(forKey: "lookbackDays") ?? 5
+            return LookbackDays(rawValue: raw) ?? .days5
+        }
+        set {
+            withMutation(keyPath: \.lookbackDays) {
+                Self.defaults?.set(newValue.rawValue, forKey: "lookbackDays")
+            }
+        }
+    }
 
     var defaultRange: DefaultRange {
         get {
@@ -69,5 +104,14 @@ final class SettingsViewModel {
     static func currentDefaultRange() -> DefaultRange {
         let raw = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.string(forKey: "defaultRange") ?? DefaultRange.days14.rawValue
         return DefaultRange(rawValue: raw) ?? .days14
+    }
+
+    static func currentLookbackDays() -> Int {
+        let raw = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.integer(forKey: "lookbackDays")
+        // UserDefaults returns 0 for missing keys, so check if key exists
+        if UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.object(forKey: "lookbackDays") == nil {
+            return 5
+        }
+        return raw ?? 5
     }
 }

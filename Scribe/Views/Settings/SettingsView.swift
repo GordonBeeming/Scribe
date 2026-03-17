@@ -18,6 +18,15 @@ struct SettingsView: View {
                             Text("\(currency.code) - \(currency.name)").tag(currency.code)
                         }
                     }
+
+                    Picker("Past Items Window", selection: $viewModel.lookbackDays) {
+                        ForEach(LookbackDays.allCases) { days in
+                            Text(days.displayName).tag(days)
+                        }
+                    }
+                    Text("Show past items for this many days. Older items are auto-confirmed.")
+                        .font(.caption)
+                        .foregroundStyle(ScribeTheme.secondaryText)
                 }
 
                 Section("Dashboard") {
