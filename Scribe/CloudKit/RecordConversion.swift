@@ -305,6 +305,8 @@ enum RecordConversion {
         record["currencyCode"] = adjustment.currencyCode as CKRecordValue
         if let notes = adjustment.notes {
             record["notes"] = notes as CKRecordValue
+        } else {
+            record["notes"] = nil
         }
         record["createdAt"] = adjustment.createdAt as CKRecordValue
         record["modifiedAt"] = adjustment.modifiedAt as CKRecordValue

@@ -661,6 +661,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             section.ckRecordData = ckData
         } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
             adjustment.ckRecordData = ckData
+        } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
+            preferences.ckRecordData = ckData
         }
 
         try? bgContext.save()
@@ -685,6 +687,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             section.ckRecordData = nil
         } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
             adjustment.ckRecordData = nil
+        } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
+            preferences.ckRecordData = nil
         }
 
         try? bgContext.save()
