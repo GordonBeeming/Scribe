@@ -11,6 +11,7 @@ enum SharedModelContainer {
         FamilyMember.self,
         DashboardSection.self,
         QuickAdjustment.self,
+        UserPreferences.self,
     ])
 
     static var sharedStoreURL: URL {

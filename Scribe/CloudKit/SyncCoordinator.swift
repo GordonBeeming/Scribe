@@ -149,6 +149,11 @@ final class SyncCoordinator: @unchecked Sendable {
                 CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
             })
         }
+        if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>()) {
+            recordIDs.append(contentsOf: preferences.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+        }
 
         if !recordIDs.isEmpty {
             // Ensure zone is saved first
@@ -251,6 +256,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     recordsToSave.append(RecordConversion.record(from: section, zoneID: zoneID))
                 } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
                     recordsToSave.append(RecordConversion.record(from: adjustment, zoneID: zoneID))
+                } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
+                    recordsToSave.append(RecordConversion.record(from: preferences, zoneID: zoneID))
                 } else {
                     // Object deleted locally before send — remove from pending
                     logger.info("Record \(recordID.recordName) not found locally, removing from pending")
@@ -338,6 +345,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
                 if remoteModified >= existing.modifiedAt {
                     RecordConversion.applyRecord(record, to: existing)
+                    // Restore familyMembers relationship
+                    restoreFamilyMembers(from: record, to: existing, in: context)
                 }
                 existing.ckRecordData = ckData
             } else {
@@ -363,18 +372,16 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 item.payDayAdjustmentDays = record["payDayAdjustmentDays"] as? String
                 item.publicHolidayCountryCode = record["publicHolidayCountryCode"] as? String
                 context.insert(item)
+                // Restore familyMembers relationship
+                restoreFamilyMembers(from: record, to: item, in: context)
             }
 
         case RecordConversion.occurrenceRecordType:
             let predicate = #Predicate<Occurrence> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
-                let remoteStatus = OccurrenceStatus(rawValue: record["statusRaw"] as? String ?? "pending") ?? .pending
-                if remoteStatus == .confirmed || existing.status == .pending {
-                    existing.statusRaw = record["statusRaw"] as? String ?? existing.statusRaw
-                    existing.confirmedAt = record["confirmedAt"] as? Date ?? existing.confirmedAt
-                    if let actualAmount = record["actualAmount"] as? NSNumber {
-                        existing.actualAmount = actualAmount.decimalValue
-                    }
+                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
+                if remoteModified >= existing.modifiedAt {
+                    RecordConversion.applyRecord(record, to: existing)
                 }
                 existing.ckRecordData = ckData
             } else {
@@ -387,6 +394,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     notes: record["notes"] as? String
                 )
                 occurrence.id = uuid
+                occurrence.createdAt = record["createdAt"] as? Date ?? Date()
+                occurrence.modifiedAt = record["modifiedAt"] as? Date ?? Date()
                 occurrence.ckRecordData = ckData
                 if let ref = record["budgetItemRef"] as? CKRecord.Reference,
                    let parentUUID = UUID(uuidString: ref.recordID.recordName) {
@@ -399,13 +408,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.amountOverrideRecordType:
             let predicate = #Predicate<AmountOverride> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: predicate)).first {
-                existing.effectiveDate = record["effectiveDate"] as? Date ?? existing.effectiveDate
-                if let amount = record["amount"] as? NSNumber {
-                    existing.amount = amount.decimalValue
+                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
+                if remoteModified >= existing.modifiedAt {
+                    RecordConversion.applyRecord(record, to: existing)
                 }
-                existing.overrideDayOfMonth = record["overrideDayOfMonth"] as? Int
-                existing.overrideReferenceDate = record["overrideReferenceDate"] as? Date
-                existing.notes = record["notes"] as? String
                 existing.ckRecordData = ckData
             } else {
                 let override_ = AmountOverride(
@@ -416,6 +422,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     notes: record["notes"] as? String
                 )
                 override_.id = uuid
+                override_.createdAt = record["createdAt"] as? Date ?? Date()
+                override_.modifiedAt = record["modifiedAt"] as? Date ?? Date()
                 override_.ckRecordData = ckData
                 if let ref = record["budgetItemRef"] as? CKRecord.Reference,
                    let parentUUID = UUID(uuidString: ref.recordID.recordName) {
@@ -428,8 +436,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.familyMemberRecordType:
             let predicate = #Predicate<FamilyMember> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: predicate)).first {
-                existing.name = record["name"] as? String ?? existing.name
-                existing.sortOrder = record["sortOrder"] as? Int ?? existing.sortOrder
+                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
+                if remoteModified >= existing.modifiedAt {
+                    RecordConversion.applyRecord(record, to: existing)
+                }
                 existing.ckRecordData = ckData
             } else {
                 let member = FamilyMember(
@@ -437,6 +447,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     sortOrder: record["sortOrder"] as? Int ?? 0
                 )
                 member.id = uuid
+                member.createdAt = record["createdAt"] as? Date ?? Date()
+                member.modifiedAt = record["modifiedAt"] as? Date ?? Date()
                 member.ckRecordData = ckData
                 context.insert(member)
             }
@@ -495,6 +507,28 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 context.insert(adjustment)
             }
 
+        case RecordConversion.userPreferencesRecordType:
+            let predicate = #Predicate<UserPreferences> { $0.id == uuid }
+            if let existing = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: predicate)).first {
+                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
+                if remoteModified >= existing.modifiedAt {
+                    RecordConversion.applyRecord(record, to: existing)
+                }
+                existing.ckRecordData = ckData
+            } else {
+                let preferences = UserPreferences(
+                    defaultRangeRaw: record["defaultRangeRaw"] as? String ?? "14days",
+                    lookbackDays: record["lookbackDays"] as? Int ?? 5,
+                    defaultCurrency: record["defaultCurrency"] as? String ?? "AUD"
+                )
+                preferences.id = uuid
+                preferences.createdAt = record["createdAt"] as? Date ?? Date()
+                preferences.modifiedAt = record["modifiedAt"] as? Date ?? Date()
+                preferences.ckRecordData = ckData
+                preferences.syncToUserDefaults()
+                context.insert(preferences)
+            }
+
         default:
             break
         }
@@ -535,8 +569,28 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             if let item = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: predicate)).first {
                 context.delete(item)
             }
+        case RecordConversion.userPreferencesRecordType:
+            let predicate = #Predicate<UserPreferences> { $0.id == uuid }
+            if let item = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: predicate)).first {
+                context.delete(item)
+            }
         default:
             break
+        }
+    }
+
+    // MARK: - Family Member Relationship Restoration
+
+    @MainActor
+    private func restoreFamilyMembers(from record: CKRecord, to item: BudgetItem, in context: ModelContext) {
+        if let memberIDStrings = record["familyMemberIDs"] as? [String] {
+            let memberUUIDs = memberIDStrings.compactMap { UUID(uuidString: $0) }
+            item.familyMembers = memberUUIDs.compactMap { memberUUID in
+                let pred = #Predicate<FamilyMember> { $0.id == memberUUID }
+                return try? context.fetch(FetchDescriptor<FamilyMember>(predicate: pred)).first
+            }
+        } else {
+            item.familyMembers = []
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 enum DefaultRange: String, CaseIterable, Identifiable {
     case days7 = "7days"
@@ -50,6 +51,7 @@ final class SettingsViewModel {
         set {
             withMutation(keyPath: \.defaultRange) {
                 Self.defaults?.set(newValue.rawValue, forKey: "defaultRange")
+                updatePreferences { $0.defaultRangeRaw = newValue.rawValue }
             }
         }
     }
@@ -62,8 +64,43 @@ final class SettingsViewModel {
         set {
             withMutation(keyPath: \.defaultCurrency) {
                 Self.defaults?.set(newValue, forKey: "defaultCurrency")
+                updatePreferences { $0.defaultCurrency = newValue }
             }
         }
+    }
+
+    /// Read/create the shared UserPreferences and apply a mutation, then push to CloudKit.
+    private func updatePreferences(_ mutation: (UserPreferences) -> Void) {
+        guard let modelContext else { return }
+        let preferences = getOrCreatePreferences(in: modelContext)
+        mutation(preferences)
+        preferences.modifiedAt = Date()
+        try? modelContext.save()
+        SyncCoordinator.shared.pushChange(for: UserPreferences.sharedID)
+    }
+
+    /// Get existing UserPreferences or create one seeded from current UserDefaults.
+    private func getOrCreatePreferences(in context: ModelContext) -> UserPreferences {
+        let sharedID = UserPreferences.sharedID
+        let predicate = #Predicate<UserPreferences> { $0.id == sharedID }
+        if let existing = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: predicate)).first {
+            return existing
+        }
+        // Seed from current UserDefaults values
+        let preferences = UserPreferences(
+            defaultRangeRaw: defaultRange.rawValue,
+            lookbackDays: lookbackDays.rawValue,
+            defaultCurrency: defaultCurrency
+        )
+        context.insert(preferences)
+        try? context.save()
+        return preferences
+    }
+
+    /// Ensure UserPreferences model exists (call on app launch for migration).
+    func ensurePreferencesExist() {
+        guard let modelContext else { return }
+        let _ = getOrCreatePreferences(in: modelContext)
     }
 
     static func currentDefaultRange() -> DefaultRange {

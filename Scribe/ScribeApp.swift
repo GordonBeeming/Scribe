@@ -17,6 +17,9 @@ struct ScribeApp: App {
                 .onAppear {
                     if !isTestEnvironment {
                         SyncCoordinator.shared.start(with: SharedModelContainer.shared)
+                        // Ensure UserPreferences model exists (migrates from UserDefaults)
+                        let vm = SettingsViewModel(modelContext: SharedModelContainer.shared.mainContext)
+                        vm.ensurePreferencesExist()
                     }
                 }
         }
