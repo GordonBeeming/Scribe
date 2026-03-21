@@ -38,6 +38,28 @@ enum DefaultRange: String, CaseIterable, Identifiable {
     }
 }
 
+enum LookbackDays: Int, CaseIterable, Identifiable {
+    case days0 = 0
+    case days1 = 1
+    case days2 = 2
+    case days3 = 3
+    case days5 = 5
+    case days7 = 7
+
+    var id: Int { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .days0: "None"
+        case .days1: "1 day"
+        case .days2: "2 days"
+        case .days3: "3 days"
+        case .days5: "5 days"
+        case .days7: "7 days"
+        }
+    }
+}
+
 @Observable
 final class SettingsViewModel {
     nonisolated(unsafe) private static let defaults = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")
@@ -62,6 +84,7 @@ final class SettingsViewModel {
             }
         }
     }
+
     var defaultRange: DefaultRange {
         get {
             access(keyPath: \.defaultRange)

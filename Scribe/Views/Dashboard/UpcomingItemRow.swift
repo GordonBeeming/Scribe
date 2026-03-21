@@ -29,14 +29,34 @@ struct UpcomingItemRow: View {
         exchangeRateCache.convertToBase(displayAmount, from: item.budgetItem.currencyCode)
     }
 
+    private var isOverdue: Bool {
+        !item.isConfirmed && item.dueDate < Calendar.current.startOfDay(for: Date())
+    }
+
+    private var isIncome: Bool {
+        item.budgetItem.type == .income
+    }
+
+    private var confirmIconName: String {
+        if isIncome {
+            return item.isConfirmed ? "arrow.down.circle.fill" : "arrow.down.circle"
+        } else {
+            return item.isConfirmed ? "checkmark.circle.fill" : "circle"
+        }
+    }
+
     var body: some View {
         HStack {
             Button(action: onConfirm) {
-                Image(systemName: item.isConfirmed ? "checkmark.circle.fill" : "circle")
+                Image(systemName: confirmIconName)
                     .foregroundStyle(item.isConfirmed ? ScribeTheme.success : ScribeTheme.secondaryText)
                     .imageScale(.large)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(isIncome
+                ? (item.isConfirmed ? "Undo received" : "Mark as received")
+                : (item.isConfirmed ? "Undo paid" : "Mark as paid")
+            )
 
             VStack(alignment: .leading) {
                 Text(item.budgetItem.name)
@@ -45,7 +65,7 @@ struct UpcomingItemRow: View {
 
                 Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
                     .font(.caption)
-                    .foregroundStyle(ScribeTheme.secondaryText)
+                    .foregroundStyle(isOverdue ? .orange : ScribeTheme.secondaryText)
             }
 
             Spacer()

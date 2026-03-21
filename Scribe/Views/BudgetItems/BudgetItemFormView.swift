@@ -14,6 +14,7 @@ struct BudgetItemFormView: View {
     let mode: Mode
     @State private var viewModel = BudgetItemDetailViewModel()
     @State private var amountText: String = ""
+    @State private var availableCountries: [AvailableCountry] = []
 
     var body: some View {
         NavigationStack {
@@ -95,22 +96,14 @@ struct BudgetItemFormView: View {
                             }
                         }
 
-                        NavigationLink {
-                            CountryPickerView(selectedCode: Binding(
-                                get: { viewModel.publicHolidayCountryCode },
-                                set: { viewModel.publicHolidayCountryCode = $0 }
-                            ))
-                        } label: {
-                            HStack {
-                                Text("Public Holiday Country")
-                                Spacer()
-                                if let code = viewModel.publicHolidayCountryCode {
-                                    Text(Locale.current.localizedString(forRegionCode: code) ?? code)
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    Text("None")
-                                        .foregroundStyle(.secondary)
-                                }
+                        Picker("Public Holiday Country", selection: Binding(
+                            get: { viewModel.publicHolidayCountryCode },
+                            set: { viewModel.publicHolidayCountryCode = $0 }
+                        )) {
+                            Text("None").tag(String?.none)
+                            ForEach(availableCountries) { country in
+                                Text("\(country.name) (\(country.countryCode))")
+                                    .tag(Optional(country.countryCode))
                             }
                         }
                     }
@@ -160,6 +153,10 @@ struct BudgetItemFormView: View {
                     viewModel.loadFromItem(item)
                     amountText = "\(item.amount)"
                 }
+            }
+            .task {
+                let result = await HolidayService.shared.availableCountries()
+                availableCountries = result.countries.sorted { $0.name < $1.name }
             }
         }
     }

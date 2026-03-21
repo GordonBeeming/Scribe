@@ -16,11 +16,23 @@ final class DashboardViewModel {
         var isConfirmed: Bool {
             occurrence?.status == .confirmed
         }
+
+        var isSkipped: Bool {
+            occurrence?.status == .skipped
+        }
+
+        /// Amount used for balance calculation: actual if confirmed, 0 if skipped, projected if pending
+        var effectiveBalanceAmount: Decimal {
+            if isSkipped { return 0 }
+            if isConfirmed { return occurrence?.actualAmount ?? amount }
+            return amount
+        }
     }
 
-    func upcomingItems(budgetItems: [BudgetItem], occurrences: [Occurrence]) -> [UpcomingItem] {
+    func upcomingItems(budgetItems: [BudgetItem], occurrences: [Occurrence], lookbackDays: Int = 0) -> [UpcomingItem] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
+        let startDate = calendar.date(byAdding: .day, value: -lookbackDays, to: today) ?? today
         guard let endDate = calendar.date(byAdding: .day, value: upcomingDays, to: today) else {
             return []
         }
@@ -28,7 +40,7 @@ final class DashboardViewModel {
         var items: [UpcomingItem] = []
 
         for budgetItem in budgetItems where budgetItem.isActive {
-            let dates = DateCalculator.occurrenceDates(for: budgetItem, in: today...endDate)
+            let dates = DateCalculator.occurrenceDates(for: budgetItem, in: startDate...endDate)
             for date in dates {
                 let amount = budgetItem.effectiveAmount(on: date)
                 let existingOccurrence = occurrences.first {
@@ -74,7 +86,7 @@ final class DashboardViewModel {
     // MARK: - Weekly Grouping
 
     struct WeekGroup: Identifiable {
-        let id: UUID
+        var id: Date { startDate }
         let label: String
         let startDate: Date
         let endDate: Date
@@ -87,7 +99,15 @@ final class DashboardViewModel {
         let carryOver: Decimal
         let closingBalance: Decimal
         let hasBalanceReset: Bool
+        let confirmedCount: Int
+        let totalCount: Int
         var delta: Decimal { totalIncome - totalExpenses + adjustmentIncome - adjustmentExpenses }
+
+        /// Total amount of pending (unconfirmed, not skipped) expenses still to come
+        var pendingExpenses: Decimal {
+            items.filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
+                .reduce(Decimal.zero) { $0 + $1.amount }
+        }
     }
 
     struct MonthlySummary: Identifiable {
@@ -205,8 +225,8 @@ final class DashboardViewModel {
 
         var groups: [WeekGroup] = []
         for pg in preliminaryGroups {
-            let totalIncome = pg.items.filter { $0.budgetItem.type == .income }.reduce(Decimal.zero) { $0 + $1.amount }
-            let totalExpenses = pg.items.filter { $0.budgetItem.type == .expense }.reduce(Decimal.zero) { $0 + $1.amount }
+            let totalIncome = pg.items.filter { $0.budgetItem.type == .income }.reduce(Decimal.zero) { $0 + $1.effectiveBalanceAmount }
+            let totalExpenses = pg.items.filter { $0.budgetItem.type == .expense }.reduce(Decimal.zero) { $0 + $1.effectiveBalanceAmount }
             let adjIncome = pg.adjustments.filter { $0.adjustmentType == .income }.reduce(Decimal.zero) { $0 + $1.amount }
             let adjExpenses = pg.adjustments.filter { $0.adjustmentType == .expense }.reduce(Decimal.zero) { $0 + $1.amount }
 
@@ -227,7 +247,6 @@ final class DashboardViewModel {
             let label = "\(formatter.string(from: pg.start)) – \(formatter.string(from: pg.end))"
 
             groups.append(WeekGroup(
-                id: UUID(),
                 label: label,
                 startDate: pg.start,
                 endDate: pg.end,
@@ -239,7 +258,9 @@ final class DashboardViewModel {
                 adjustmentExpenses: adjExpenses,
                 carryOver: carryOver,
                 closingBalance: closingBalance,
-                hasBalanceReset: hasReset
+                hasBalanceReset: hasReset,
+                confirmedCount: pg.items.filter(\.isConfirmed).count,
+                totalCount: pg.items.count
             ))
 
             runningBalance = closingBalance
