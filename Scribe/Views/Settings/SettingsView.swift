@@ -155,4 +155,5 @@ private struct SyncStatusRow: View {
 
 #Preview {
     SettingsView()
+        .modelContainer(SharedModelContainer.shared)
 }
