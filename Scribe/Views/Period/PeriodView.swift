@@ -235,6 +235,7 @@ struct PeriodView: View {
             existing.status = .pending
             existing.confirmedAt = nil
             existing.actualAmount = nil
+            existing.modifiedAt = Date()
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
@@ -252,6 +253,7 @@ struct PeriodView: View {
         if let existing = item.occurrence {
             existing.status = .confirmed
             existing.confirmedAt = Date()
+            existing.modifiedAt = Date()
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
@@ -282,6 +284,7 @@ struct PeriodView: View {
     private func adjustItemAmount(_ item: PeriodViewModel.DayItem, newAmount: Decimal) {
         guard let occurrence = item.occurrence else { return }
         occurrence.actualAmount = newAmount
+        occurrence.modifiedAt = Date()
         try? modelContext.save()
         SyncCoordinator.shared.pushChange(for: occurrence.id)
     }
@@ -289,10 +292,12 @@ struct PeriodView: View {
     private func skipItem(_ item: PeriodViewModel.DayItem, on date: Date) {
         if let existing = item.occurrence, existing.status == .skipped {
             existing.status = .pending
+            existing.modifiedAt = Date()
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else if let existing = item.occurrence {
             existing.status = .skipped
+            existing.modifiedAt = Date()
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {

@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct SettingsView: View {
+    @Environment(\.modelContext) private var modelContext
     @State private var viewModel = SettingsViewModel()
     var body: some View {
         NavigationStack {
@@ -64,6 +65,9 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .onAppear {
+                viewModel = SettingsViewModel(modelContext: modelContext)
+            }
         }
     }
 }
@@ -151,4 +155,5 @@ private struct SyncStatusRow: View {
 
 #Preview {
     SettingsView()
+        .modelContainer(SharedModelContainer.shared)
 }

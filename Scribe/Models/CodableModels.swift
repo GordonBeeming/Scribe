@@ -10,23 +10,30 @@ struct ScribeExport: Codable {
     let occurrences: [CodableOccurrence]
     let dashboardSections: [CodableDashboardSection]?
     let quickAdjustments: [CodableQuickAdjustment]?
+    let userPreferences: CodableUserPreferences?
 }
 
 struct CodableFamilyMember: Codable {
     let id: UUID
     let name: String
     let sortOrder: Int
+    let createdAt: Date?
+    let modifiedAt: Date?
 
     init(from member: FamilyMember) {
         self.id = member.id
         self.name = member.name
         self.sortOrder = member.sortOrder
+        self.createdAt = member.createdAt
+        self.modifiedAt = member.modifiedAt
     }
 
     @MainActor
     func toModel() -> FamilyMember {
         let member = FamilyMember(name: name, sortOrder: sortOrder)
         member.id = id
+        if let createdAt { member.createdAt = createdAt }
+        if let modifiedAt { member.modifiedAt = modifiedAt }
         return member
     }
 }
@@ -108,6 +115,8 @@ struct CodableAmountOverride: Codable {
     let overrideReferenceDate: Date?
     let notes: String?
     let budgetItemID: UUID?
+    let createdAt: Date?
+    let modifiedAt: Date?
 
     init(from override_: AmountOverride) {
         self.id = override_.id
@@ -117,6 +126,8 @@ struct CodableAmountOverride: Codable {
         self.overrideReferenceDate = override_.overrideReferenceDate
         self.notes = override_.notes
         self.budgetItemID = override_.budgetItem?.id
+        self.createdAt = override_.createdAt
+        self.modifiedAt = override_.modifiedAt
     }
 
     @MainActor
@@ -129,6 +140,8 @@ struct CodableAmountOverride: Codable {
             notes: notes
         )
         override_.id = id
+        if let createdAt { override_.createdAt = createdAt }
+        if let modifiedAt { override_.modifiedAt = modifiedAt }
         return override_
     }
 }
@@ -142,6 +155,8 @@ struct CodableOccurrence: Codable {
     let confirmedAt: Date?
     let notes: String?
     let budgetItemID: UUID?
+    let createdAt: Date?
+    let modifiedAt: Date?
 
     init(from occurrence: Occurrence) {
         self.id = occurrence.id
@@ -152,6 +167,8 @@ struct CodableOccurrence: Codable {
         self.confirmedAt = occurrence.confirmedAt
         self.notes = occurrence.notes
         self.budgetItemID = occurrence.budgetItem?.id
+        self.createdAt = occurrence.createdAt
+        self.modifiedAt = occurrence.modifiedAt
     }
 
     @MainActor
@@ -165,6 +182,8 @@ struct CodableOccurrence: Codable {
             notes: notes
         )
         occurrence.id = id
+        if let createdAt { occurrence.createdAt = createdAt }
+        if let modifiedAt { occurrence.modifiedAt = modifiedAt }
         return occurrence
     }
 }
@@ -249,5 +268,36 @@ struct CodableQuickAdjustment: Codable {
         adjustment.createdAt = createdAt
         adjustment.modifiedAt = modifiedAt
         return adjustment
+    }
+}
+
+struct CodableUserPreferences: Codable {
+    let id: UUID
+    let defaultRangeRaw: String
+    let lookbackDays: Int
+    let defaultCurrency: String
+    let createdAt: Date
+    let modifiedAt: Date
+
+    init(from preferences: UserPreferences) {
+        self.id = preferences.id
+        self.defaultRangeRaw = preferences.defaultRangeRaw
+        self.lookbackDays = preferences.lookbackDays
+        self.defaultCurrency = preferences.defaultCurrency
+        self.createdAt = preferences.createdAt
+        self.modifiedAt = preferences.modifiedAt
+    }
+
+    @MainActor
+    func toModel() -> UserPreferences {
+        let preferences = UserPreferences(
+            defaultRangeRaw: defaultRangeRaw,
+            lookbackDays: lookbackDays,
+            defaultCurrency: defaultCurrency
+        )
+        preferences.id = id
+        preferences.createdAt = createdAt
+        preferences.modifiedAt = modifiedAt
+        return preferences
     }
 }

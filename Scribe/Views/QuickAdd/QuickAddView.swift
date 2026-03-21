@@ -81,7 +81,7 @@ struct QuickAddView: View {
                 QuickAddFormSheet(mode: .balanceReset)
             }
             .onAppear {
-                hasEverResetBalance = UserDefaults.standard.bool(forKey: hasResetKey)
+                hasEverResetBalance = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.bool(forKey: hasResetKey) ?? false
             }
         }
     }
@@ -261,7 +261,7 @@ struct QuickAddFormSheet: View {
         SyncCoordinator.shared.pushChange(for: adjustment.id)
 
         if type == .balanceReset {
-            UserDefaults.standard.set(true, forKey: "hasEverResetBalance")
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.set(true, forKey: "hasEverResetBalance")
         }
     }
 }

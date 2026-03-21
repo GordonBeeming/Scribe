@@ -37,6 +37,8 @@ final class Occurrence {
     var statusRaw: String
     var confirmedAt: Date?
     var notes: String?
+    var createdAt: Date = Date()
+    var modifiedAt: Date = Date()
     var ckRecordData: Data?
     var budgetItem: BudgetItem?
 
@@ -61,6 +63,8 @@ final class Occurrence {
         self.statusRaw = status.rawValue
         self.confirmedAt = confirmedAt
         self.notes = notes
+        self.createdAt = Date()
+        self.modifiedAt = Date()
         self.budgetItem = budgetItem
     }
 }

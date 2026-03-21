@@ -9,6 +9,8 @@ final class AmountOverride {
     var overrideDayOfMonth: Int?
     var overrideReferenceDate: Date?
     var notes: String?
+    var createdAt: Date = Date()
+    var modifiedAt: Date = Date()
     var ckRecordData: Data?
     var budgetItem: BudgetItem?
 
@@ -26,6 +28,8 @@ final class AmountOverride {
         self.overrideDayOfMonth = overrideDayOfMonth
         self.overrideReferenceDate = overrideReferenceDate
         self.notes = notes
+        self.createdAt = Date()
+        self.modifiedAt = Date()
         self.budgetItem = budgetItem
     }
 }

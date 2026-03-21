@@ -63,6 +63,13 @@ enum DataManagementService {
             for a in adjustments { context.delete(a) }
         }
 
+        if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>()) {
+            deletionIDs.append(contentsOf: preferences.map {
+                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
+            })
+            for p in preferences { context.delete(p) }
+        }
+
         try? context.save()
 
         if !deletionIDs.isEmpty {
@@ -79,6 +86,7 @@ enum DataManagementService {
         let members = (try? context.fetch(FetchDescriptor<FamilyMember>())) ?? []
         let sections = (try? context.fetch(FetchDescriptor<DashboardSection>())) ?? []
         let adjustments = (try? context.fetch(FetchDescriptor<QuickAdjustment>())) ?? []
+        let preferences = (try? context.fetch(FetchDescriptor<UserPreferences>()))?.first
 
         let export = ScribeExport(
             exportDate: Date(),
@@ -88,7 +96,8 @@ enum DataManagementService {
             amountOverrides: overrides.map { CodableAmountOverride(from: $0) },
             occurrences: occurrences.map { CodableOccurrence(from: $0) },
             dashboardSections: sections.map { CodableDashboardSection(from: $0) },
-            quickAdjustments: adjustments.map { CodableQuickAdjustment(from: $0) }
+            quickAdjustments: adjustments.map { CodableQuickAdjustment(from: $0) },
+            userPreferences: preferences.map { CodableUserPreferences(from: $0) }
         )
 
         let encoder = JSONEncoder()
@@ -115,8 +124,11 @@ enum DataManagementService {
         var memberMap: [UUID: FamilyMember] = [:]
         for codableMember in export.familyMembers {
             if mode == .merge, let existing = existingFamilyMember(id: codableMember.id, in: context) {
-                existing.name = codableMember.name
-                existing.sortOrder = codableMember.sortOrder
+                if (codableMember.modifiedAt ?? Date.distantPast) >= existing.modifiedAt {
+                    existing.name = codableMember.name
+                    existing.sortOrder = codableMember.sortOrder
+                    if let modifiedAt = codableMember.modifiedAt { existing.modifiedAt = modifiedAt }
+                }
                 memberMap[codableMember.id] = existing
             } else {
                 let member = codableMember.toModel()
@@ -147,13 +159,16 @@ enum DataManagementService {
         // Insert amount overrides
         for codableOverride in export.amountOverrides {
             if mode == .merge, let existing = existingAmountOverride(id: codableOverride.id, in: context) {
-                existing.effectiveDate = codableOverride.effectiveDate
-                existing.amount = codableOverride.amount
-                existing.overrideDayOfMonth = codableOverride.overrideDayOfMonth
-                existing.overrideReferenceDate = codableOverride.overrideReferenceDate
-                existing.notes = codableOverride.notes
-                if let parentID = codableOverride.budgetItemID {
-                    existing.budgetItem = itemMap[parentID]
+                if (codableOverride.modifiedAt ?? Date.distantPast) >= existing.modifiedAt {
+                    existing.effectiveDate = codableOverride.effectiveDate
+                    existing.amount = codableOverride.amount
+                    existing.overrideDayOfMonth = codableOverride.overrideDayOfMonth
+                    existing.overrideReferenceDate = codableOverride.overrideReferenceDate
+                    existing.notes = codableOverride.notes
+                    if let modifiedAt = codableOverride.modifiedAt { existing.modifiedAt = modifiedAt }
+                    if let parentID = codableOverride.budgetItemID {
+                        existing.budgetItem = itemMap[parentID]
+                    }
                 }
             } else {
                 let override_ = codableOverride.toModel()
@@ -168,14 +183,17 @@ enum DataManagementService {
         // Insert occurrences
         for codableOcc in export.occurrences {
             if mode == .merge, let existing = existingOccurrence(id: codableOcc.id, in: context) {
-                existing.dueDate = codableOcc.dueDate
-                existing.expectedAmount = codableOcc.expectedAmount
-                existing.actualAmount = codableOcc.actualAmount
-                existing.statusRaw = codableOcc.statusRaw
-                existing.confirmedAt = codableOcc.confirmedAt
-                existing.notes = codableOcc.notes
-                if let parentID = codableOcc.budgetItemID {
-                    existing.budgetItem = itemMap[parentID]
+                if (codableOcc.modifiedAt ?? Date.distantPast) >= existing.modifiedAt {
+                    existing.dueDate = codableOcc.dueDate
+                    existing.expectedAmount = codableOcc.expectedAmount
+                    existing.actualAmount = codableOcc.actualAmount
+                    existing.statusRaw = codableOcc.statusRaw
+                    existing.confirmedAt = codableOcc.confirmedAt
+                    existing.notes = codableOcc.notes
+                    if let modifiedAt = codableOcc.modifiedAt { existing.modifiedAt = modifiedAt }
+                    if let parentID = codableOcc.budgetItemID {
+                        existing.budgetItem = itemMap[parentID]
+                    }
                 }
             } else {
                 let occurrence = codableOcc.toModel()
@@ -226,6 +244,26 @@ enum DataManagementService {
                 }
                 recordIDs.append(CKRecord.ID(recordName: codableAdjustment.id.uuidString, zoneID: zoneID))
             }
+        }
+
+        // Import user preferences
+        if let codablePrefs = export.userPreferences {
+            let sharedID = UserPreferences.sharedID
+            let predicate = #Predicate<UserPreferences> { $0.id == sharedID }
+            if mode == .merge, let existing = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: predicate)).first {
+                if codablePrefs.modifiedAt > existing.modifiedAt {
+                    existing.defaultRangeRaw = codablePrefs.defaultRangeRaw
+                    existing.lookbackDays = codablePrefs.lookbackDays
+                    existing.defaultCurrency = codablePrefs.defaultCurrency
+                    existing.modifiedAt = codablePrefs.modifiedAt
+                    existing.syncToUserDefaults()
+                }
+            } else {
+                let preferences = codablePrefs.toModel()
+                context.insert(preferences)
+                preferences.syncToUserDefaults()
+            }
+            recordIDs.append(CKRecord.ID(recordName: codablePrefs.id.uuidString, zoneID: zoneID))
         }
 
         try? context.save()
