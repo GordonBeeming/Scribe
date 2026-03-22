@@ -27,6 +27,7 @@ targets:
     info:
       path: Scribe/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UIBackgroundModes:
           - remote-notification
@@ -67,6 +68,7 @@ targets:
     info:
       path: ScribeWidget/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: Scribe Widget
         NSExtension:
@@ -101,6 +103,7 @@ targets:
     info:
       path: ScribeWatch/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UIBackgroundModes:
           - remote-notification
@@ -132,6 +135,7 @@ targets:
     info:
       path: ScribeWatchWidget/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: Scribe Watch Widget
         NSExtension:
