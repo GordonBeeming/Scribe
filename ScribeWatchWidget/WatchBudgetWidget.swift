@@ -76,6 +76,9 @@ struct WatchBudgetProvider: TimelineProvider {
                 AmountOverride.self,
                 Occurrence.self,
                 FamilyMember.self,
+                DashboardSection.self,
+                QuickAdjustment.self,
+                UserPreferences.self,
             ])
             let config = ModelConfiguration("Scribe", schema: schema, url: sharedStoreURL, cloudKitDatabase: .none)
             let container = try ModelContainer(for: schema, configurations: [config])
