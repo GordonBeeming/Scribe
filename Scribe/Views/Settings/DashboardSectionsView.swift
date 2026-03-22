@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+import os
+
+private let dashboardSectionsLogger = Logger(subsystem: "com.gordonbeeming.scribe", category: "DashboardSections")
 
 struct DashboardSectionsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -184,7 +187,12 @@ struct DashboardSectionAddView: View {
             label: label.trimmingCharacters(in: .whitespaces)
         )
         modelContext.insert(section)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            dashboardSectionsLogger.info("Saved new DashboardSection: \(section.id) '\(section.label)'")
+        } catch {
+            dashboardSectionsLogger.error("Failed to save DashboardSection: \(error.localizedDescription)")
+        }
         SyncCoordinator.shared.pushChange(for: section.id)
     }
 }

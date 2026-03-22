@@ -1,8 +1,11 @@
 import Foundation
 import SwiftData
+import os
 
 enum SharedModelContainer {
     static let appGroupIdentifier = "group.com.gordonbeeming.scribe"
+
+    private static let logger = Logger(subsystem: "com.gordonbeeming.scribe", category: "SharedModelContainer")
 
     static let schema = Schema([
         BudgetItem.self,
@@ -19,11 +22,15 @@ enum SharedModelContainer {
         if let containerURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupIdentifier
         ) {
-            return containerURL.appendingPathComponent("Scribe.store")
+            let url = containerURL.appendingPathComponent("Scribe.store")
+            logger.info("Using App Group store: \(url.path)")
+            return url
         }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
-        return appSupport.appendingPathComponent("Scribe.store")
+        let url = appSupport.appendingPathComponent("Scribe.store")
+        logger.warning("App Group unavailable, falling back to: \(url.path)")
+        return url
     }
 
     @MainActor
@@ -36,8 +43,11 @@ enum SharedModelContainer {
                 url: sharedStoreURL,
                 cloudKitDatabase: .none
             )
-            return try ModelContainer(for: schema, configurations: [config])
+            let container = try ModelContainer(for: schema, configurations: [config])
+            logger.info("ModelContainer created at shared URL")
+            return container
         } catch {
+            logger.error("ModelContainer failed at shared URL: \(error.localizedDescription) — falling back to default")
             // Fallback: default location (useful for tests / missing entitlements)
             do {
                 return try ModelContainer(for: schema)

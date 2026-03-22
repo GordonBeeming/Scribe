@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+import os
+
+private let dashboardLogger = Logger(subsystem: "com.gordonbeeming.scribe", category: "DashboardView")
 
 struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
@@ -101,6 +104,7 @@ struct DashboardView: View {
                 }
             }
             .task {
+                dashboardLogger.info("DashboardView appeared: \(dashboardSections.count) sections, \(dashboardSections.filter(\.isEnabled).count) enabled")
                 await loadHolidays()
                 await ExchangeRateCache.shared.load()
                 autoConfirmOldItems()

@@ -321,16 +321,30 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     private func handleFetchedRecordZoneChanges(_ changes: CKSyncEngine.Event.FetchedRecordZoneChanges) {
         guard let context = modelContainer?.mainContext else { return }
 
+        let sectionCountBefore = (try? context.fetchCount(FetchDescriptor<DashboardSection>())) ?? -1
+        logger.info("handleFetchedRecordZoneChanges: \(changes.modifications.count) modifications, \(changes.deletions.count) deletions (DashboardSections before: \(sectionCountBefore))")
+
         for modification in changes.modifications {
             let record = modification.record
+            if record.recordType == RecordConversion.dashboardSectionRecordType {
+                logger.info("Sync: applying DashboardSection modification \(record.recordID.recordName)")
+            }
             applyFetchedRecord(record, to: context)
         }
 
         for deletion in changes.deletions {
+            if deletion.recordType == RecordConversion.dashboardSectionRecordType {
+                logger.warning("Sync: applying DashboardSection DELETION \(deletion.recordID.recordName)")
+            }
             applyDeletion(deletion.recordID, recordType: deletion.recordType, in: context)
         }
 
         try? context.save()
+
+        let sectionCountAfter = (try? context.fetchCount(FetchDescriptor<DashboardSection>())) ?? -1
+        if sectionCountBefore != sectionCountAfter {
+            logger.warning("DashboardSection count changed: \(sectionCountBefore) -> \(sectionCountAfter)")
+        }
     }
 
     @MainActor
@@ -585,28 +599,11 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     private func restoreFamilyMembers(from record: CKRecord, to item: BudgetItem, in context: ModelContext) {
         if let memberIDStrings = record["familyMemberIDs"] as? [String] {
             let memberUUIDs = memberIDStrings.compactMap { UUID(uuidString: $0) }
-            let resolvedMembers: [FamilyMember] = memberUUIDs.compactMap { memberUUID in
+            item.familyMembers = memberUUIDs.compactMap { memberUUID in
                 let pred = #Predicate<FamilyMember> { $0.id == memberUUID }
                 return try? context.fetch(FetchDescriptor<FamilyMember>(predicate: pred)).first
             }
-
-            if resolvedMembers.count == memberUUIDs.count {
-                // All referenced members found — safe to fully replace
-                item.familyMembers = resolvedMembers
-            } else if !resolvedMembers.isEmpty {
-                // Partial resolution: merge without dropping unresolvable refs
-                var existingByID = Dictionary(uniqueKeysWithValues: item.familyMembers.map { ($0.id, $0) })
-                for member in resolvedMembers {
-                    existingByID[member.id] = member
-                }
-                item.familyMembers = Array(existingByID.values)
-                logger.debug("restoreFamilyMembers: partially resolved \(resolvedMembers.count)/\(memberUUIDs.count) members for item \(String(describing: item.id))")
-            } else {
-                // None resolvable yet — preserve existing relationships
-                logger.debug("restoreFamilyMembers: unable to resolve any of \(memberUUIDs.count) members for item \(String(describing: item.id)); preserving existing relationships")
-            }
         } else {
-            // Field absent: no family members for this item
             item.familyMembers = []
         }
     }

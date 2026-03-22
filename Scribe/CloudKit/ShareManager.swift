@@ -1,10 +1,18 @@
 import Foundation
 import CloudKit
 import SwiftUI
+import os
 
 /// Manages CKShare lifecycle: creation, acceptance, participant management.
 final class ShareManager: @unchecked Sendable {
     static let shared = ShareManager()
+
+    private let logger = Logger(subsystem: "com.gordonbeeming.scribe", category: "ShareManager")
+    private let shareRecordNameKey = "ScribeShareRecordName"
+
+    private var defaults: UserDefaults? {
+        UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+    }
 
     private init() {}
 
@@ -24,6 +32,8 @@ final class ShareManager: @unchecked Sendable {
 
         let database = CloudKitManager.shared.privateDatabase
         let _ = try await database.modifyRecords(saving: [share], deleting: [])
+        defaults?.set(share.recordID.recordName, forKey: shareRecordNameKey)
+        logger.info("Created share with recordName: \(share.recordID.recordName)")
         await MainActor.run { currentShare = share }
         return share
     }
@@ -32,14 +42,16 @@ final class ShareManager: @unchecked Sendable {
         let zoneID = CloudKitManager.shared.zoneID
         let database = CloudKitManager.shared.privateDatabase
 
-        // Fetch all shares in the zone
-        let query = CKQuery(recordType: "cloudkit.share", predicate: NSPredicate(value: true))
-        let results = try await database.records(matching: query, inZoneWith: zoneID)
-        for (_, result) in results.matchResults {
-            if let record = try? result.get(), let share = record as? CKShare {
-                await MainActor.run { currentShare = share }
-                return
-            }
+        guard let recordName = defaults?.string(forKey: shareRecordNameKey) else {
+            logger.info("No persisted share record name found")
+            return
+        }
+
+        let recordID = CKRecord.ID(recordName: recordName, zoneID: zoneID)
+        let record = try await database.record(for: recordID)
+        if let share = record as? CKShare {
+            logger.info("Fetched existing share: \(recordName)")
+            await MainActor.run { currentShare = share }
         }
     }
 
