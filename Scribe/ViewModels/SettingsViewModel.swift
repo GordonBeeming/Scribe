@@ -137,7 +137,6 @@ final class SettingsViewModel {
         )
         context.insert(preferences)
         try? context.save()
-        SyncCoordinator.shared.pushChange(for: UserPreferences.sharedID)
         return preferences
     }
 
