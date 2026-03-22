@@ -385,6 +385,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 item.budgetReflectionRaw = record["budgetReflectionRaw"] as? String
                 item.payDayAdjustmentDays = record["payDayAdjustmentDays"] as? String
                 item.publicHolidayCountryCode = record["publicHolidayCountryCode"] as? String
+                item.endDate = record["endDate"] as? Date
                 context.insert(item)
                 // Restore familyMembers relationship
                 restoreFamilyMembers(from: record, to: item, in: context)

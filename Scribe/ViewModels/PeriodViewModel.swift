@@ -64,6 +64,7 @@ final class PeriodViewModel {
         for item in budgetItems where item.isActive {
             let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)
             for date in dates {
+                if let endDate = item.endDate, date > calendar.startOfDay(for: endDate) { continue }
                 let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
                 guard displayDate >= start && displayDate <= end else { continue }
                 let amount = item.effectiveAmount(on: date)
@@ -126,6 +127,12 @@ final class PeriodViewModel {
         case .nextMonth:
             startDate = today
             endDate = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: today) ?? today
+        case .next3Months:
+            startDate = today
+            endDate = calendar.date(byAdding: DateComponents(month: 3, day: -1), to: today) ?? today
+        case .next6Months:
+            startDate = today
+            endDate = calendar.date(byAdding: DateComponents(month: 6, day: -1), to: today) ?? today
         case .thisMonth:
             startDate = calendar.date(from: calendar.dateComponents([.year, .month], from: today)) ?? today
             endDate = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: startDate) ?? today
@@ -137,6 +144,8 @@ final class PeriodViewModel {
         case next7Days = "Next 7 Days"
         case next14Days = "Next 14 Days"
         case nextMonth = "Next Month"
+        case next3Months = "Next 3 Months"
+        case next6Months = "Next 6 Months"
         case thisMonth = "This Month"
 
         var id: String { rawValue }

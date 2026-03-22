@@ -125,6 +125,7 @@ final class BudgetItem {
     var referenceDate: Date?
     var categoryRaw: String
     var isActive: Bool
+    var endDate: Date?
     var notes: String?
     var sortOrder: Int
     var showLast: Bool
@@ -187,6 +188,7 @@ final class BudgetItem {
         referenceDate: Date? = nil,
         category: ItemCategory,
         isActive: Bool = true,
+        endDate: Date? = nil,
         notes: String? = nil,
         sortOrder: Int = 0,
         showLast: Bool = false,
@@ -204,6 +206,7 @@ final class BudgetItem {
         self.referenceDate = referenceDate
         self.categoryRaw = category.rawValue
         self.isActive = isActive
+        self.endDate = endDate
         self.notes = notes
         self.sortOrder = sortOrder
         self.showLast = showLast

@@ -309,6 +309,7 @@ enum DataManagementService {
         item.referenceDate = codable.referenceDate
         item.categoryRaw = codable.categoryRaw
         item.isActive = codable.isActive
+        item.endDate = codable.endDate
         item.notes = codable.notes
         item.sortOrder = codable.sortOrder
         item.showLast = codable.showLast
