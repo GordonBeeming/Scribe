@@ -13,6 +13,7 @@ final class BudgetItemDetailViewModel {
     var referenceDate: Date? = Date()
     var category: ItemCategory = .other
     var isActive: Bool = true
+    var endDate: Date? = nil
     var notes: String = ""
     var showLast: Bool = false
     var budgetReflection: BudgetReflection = .paymentDate
@@ -38,6 +39,7 @@ final class BudgetItemDetailViewModel {
         referenceDate = item.referenceDate
         category = item.category
         isActive = item.isActive
+        endDate = item.endDate
         notes = item.notes ?? ""
         showLast = item.showLast
         budgetReflection = item.budgetReflection
@@ -57,6 +59,7 @@ final class BudgetItemDetailViewModel {
         item.referenceDate = frequency.usesReferenceDate ? referenceDate : nil
         item.category = category
         item.isActive = isActive
+        item.endDate = endDate
         item.notes = notes.isEmpty ? nil : notes
         item.showLast = showLast
         item.budgetReflection = budgetReflection

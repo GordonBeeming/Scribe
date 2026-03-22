@@ -30,6 +30,11 @@ struct BudgetItemDetailView: View {
                 }
                 LabeledContent("Category", value: item.category.displayName)
                 LabeledContent("Active", value: item.isActive ? "Yes" : "No")
+                if let endDate = item.endDate {
+                    LabeledContent("End Date") {
+                        Text(endDate, format: .dateTime.day().month().year())
+                    }
+                }
                 if let notes = item.notes, !notes.isEmpty {
                     LabeledContent("Notes", value: notes)
                 }

@@ -42,6 +42,7 @@ final class DashboardViewModel {
         for budgetItem in budgetItems where budgetItem.isActive {
             let dates = DateCalculator.occurrenceDates(for: budgetItem, in: startDate...endDate)
             for date in dates {
+                if let itemEndDate = budgetItem.endDate, date > calendar.startOfDay(for: itemEndDate) { continue }
                 let amount = budgetItem.effectiveAmount(on: date)
                 let existingOccurrence = occurrences.first {
                     $0.budgetItem?.id == budgetItem.id &&
@@ -71,6 +72,7 @@ final class DashboardViewModel {
         for item in budgetItems where item.isActive {
             let dates = DateCalculator.occurrenceDates(for: item, in: startDay...endDay)
             for date in dates {
+                if let itemEndDate = item.endDate, date > calendar.startOfDay(for: itemEndDate) { continue }
                 let amount = item.effectiveAmount(on: date)
                 if item.type == .income {
                     totalIncome += amount
@@ -180,6 +182,7 @@ final class DashboardViewModel {
             for item in budgetItems where item.isActive {
                 let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)
                 for date in dates {
+                    if let itemEndDate = item.endDate, date > calendar.startOfDay(for: itemEndDate) { continue }
                     let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
                     guard displayDate >= currentStart && displayDate <= currentEnd else { continue }
                     let amount = item.effectiveAmount(on: date)
@@ -331,6 +334,7 @@ final class DashboardViewModel {
         for item in budgetItems where item.isActive {
             let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)
             for date in dates {
+                if let itemEndDate = item.endDate, date > calendar.startOfDay(for: itemEndDate) { continue }
                 let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
                 guard displayDate >= monthStart && displayDate <= monthEnd else { continue }
                 let amount = item.effectiveAmount(on: date)

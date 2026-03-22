@@ -128,6 +128,17 @@ struct BudgetItemFormView: View {
 
                 Section {
                     Toggle("Active", isOn: $viewModel.isActive)
+                    if isEditing {
+                        Toggle("Has End Date", isOn: Binding(
+                            get: { viewModel.endDate != nil },
+                            set: { hasEnd in
+                                viewModel.endDate = hasEnd ? (viewModel.endDate ?? Date()) : nil
+                            }
+                        ))
+                        if let endDate = Binding($viewModel.endDate) {
+                            DatePicker("End Date", selection: endDate, displayedComponents: .date)
+                        }
+                    }
                 }
 
                 Section("Notes") {

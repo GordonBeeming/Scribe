@@ -8,6 +8,7 @@ struct BudgetItemListView: View {
     @State private var viewModel = BudgetItemListViewModel()
     @State private var showingAddSheet = false
     @State private var selectedFamilyMemberID: UUID?
+    @State private var itemToClose: BudgetItem?
 
     var body: some View {
         NavigationStack {
@@ -60,6 +61,26 @@ struct BudgetItemListView: View {
                                             }
                                             .tint(item.isActive ? .orange : ScribeTheme.success)
                                         }
+                                        .swipeActions(edge: .leading) {
+                                            if item.endDate != nil {
+                                                Button {
+                                                    item.endDate = nil
+                                                    item.modifiedAt = Date()
+                                                    try? modelContext.save()
+                                                    SyncCoordinator.shared.pushChange(for: item.id)
+                                                } label: {
+                                                    Label("Reopen", systemImage: "arrow.uturn.backward.circle")
+                                                }
+                                                .tint(ScribeTheme.success)
+                                            } else {
+                                                Button {
+                                                    itemToClose = item
+                                                } label: {
+                                                    Label("Close", systemImage: "xmark.circle")
+                                                }
+                                                .tint(ScribeTheme.error)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -83,6 +104,9 @@ struct BudgetItemListView: View {
             }
             .sheet(isPresented: $showingAddSheet) {
                 BudgetItemFormView(mode: .create)
+            }
+            .sheet(item: $itemToClose) { item in
+                CloseItemSheet(item: item)
             }
         }
     }
@@ -134,6 +158,45 @@ struct BudgetItemListView: View {
             }
         }
         return result
+    }
+}
+
+private struct CloseItemSheet: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    let item: BudgetItem
+
+    @State private var endDate: Date = Date()
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Close \"\(item.name)\" so it no longer appears in future periods.")
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                }
+
+                Section("End Date") {
+                    DatePicker("Last active date", selection: $endDate, displayedComponents: .date)
+                }
+            }
+            .navigationTitle("Close Item")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Close") {
+                        item.endDate = endDate
+                        item.modifiedAt = Date()
+                        try? modelContext.save()
+                        SyncCoordinator.shared.pushChange(for: item.id)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 

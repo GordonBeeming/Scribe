@@ -49,6 +49,7 @@ struct CodableBudgetItem: Codable {
     let referenceDate: Date?
     let categoryRaw: String
     let isActive: Bool
+    let endDate: Date?
     let notes: String?
     let sortOrder: Int
     let showLast: Bool
@@ -70,6 +71,7 @@ struct CodableBudgetItem: Codable {
         self.referenceDate = item.referenceDate
         self.categoryRaw = item.categoryRaw
         self.isActive = item.isActive
+        self.endDate = item.endDate
         self.notes = item.notes
         self.sortOrder = item.sortOrder
         self.showLast = item.showLast
@@ -100,6 +102,7 @@ struct CodableBudgetItem: Codable {
         item.id = id
         item.createdAt = createdAt
         item.modifiedAt = modifiedAt
+        item.endDate = endDate
         item.budgetReflectionRaw = budgetReflectionRaw
         item.payDayAdjustmentDays = payDayAdjustmentDays
         item.publicHolidayCountryCode = publicHolidayCountryCode

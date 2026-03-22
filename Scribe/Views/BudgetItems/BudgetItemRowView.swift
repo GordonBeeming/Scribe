@@ -13,7 +13,14 @@ struct BudgetItemRowView: View {
                 HStack {
                     Text(item.name)
                         .font(.body)
-                    if !item.isActive {
+                    if let endDate = item.endDate {
+                        Text("Closed \(endDate, format: .dateTime.day().month())")
+                            .font(.caption2)
+                            .foregroundStyle(ScribeTheme.error)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.ultraThinMaterial, in: Capsule())
+                    } else if !item.isActive {
                         Text("Paused")
                             .font(.caption2)
                             .foregroundStyle(ScribeTheme.secondaryText)
@@ -37,6 +44,6 @@ struct BudgetItemRowView: View {
             )
             .font(.body.monospacedDigit())
         }
-        .opacity(item.isActive ? 1.0 : 0.6)
+        .opacity(item.isActive && item.endDate == nil ? 1.0 : 0.6)
     }
 }

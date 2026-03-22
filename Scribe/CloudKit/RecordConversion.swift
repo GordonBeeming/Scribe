@@ -105,6 +105,11 @@ enum RecordConversion {
         } else {
             record["publicHolidayCountryCode"] = nil
         }
+        if let endDate = item.endDate {
+            record["endDate"] = endDate as CKRecordValue
+        } else {
+            record["endDate"] = nil
+        }
 
         return record
     }
@@ -128,6 +133,7 @@ enum RecordConversion {
         item.budgetReflectionRaw = record["budgetReflectionRaw"] as? String
         item.payDayAdjustmentDays = record["payDayAdjustmentDays"] as? String
         item.publicHolidayCountryCode = record["publicHolidayCountryCode"] as? String
+        item.endDate = record["endDate"] as? Date
         item.ckRecordData = encodeSystemFields(of: record)
     }
 
