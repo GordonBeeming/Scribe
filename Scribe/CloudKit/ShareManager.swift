@@ -48,20 +48,36 @@ final class ShareManager: @unchecked Sendable {
     }
 }
 
-// MARK: - UICloudSharingController Wrapper
+// MARK: - UICloudSharingController Presentation
 
 #if os(iOS)
-struct CloudSharingView: UIViewControllerRepresentable {
-    let share: CKShare?
-    let container: CKContainer
+extension ShareManager {
+    /// Retains the delegate for the lifetime of the presented controller.
+    @MainActor
+    private static var activeSharingDelegate: SharingDelegate?
 
-    func makeUIViewController(context: Context) -> UICloudSharingController {
-        if let share {
-            let controller = UICloudSharingController(share: share, container: container)
-            controller.delegate = context.coordinator
-            return controller
+    @MainActor
+    func presentSharing() {
+        guard let windowScene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }),
+              let rootVC = windowScene.windows.first(where: \.isKeyWindow)?.rootViewController
+        else { return }
+
+        var presenter = rootVC
+        while let presented = presenter.presentedViewController {
+            presenter = presented
+        }
+
+        let container = CloudKitManager.shared.container
+        let delegate = SharingDelegate()
+        Self.activeSharingDelegate = delegate
+
+        let controller: UICloudSharingController
+        if let share = currentShare {
+            controller = UICloudSharingController(share: share, container: container)
         } else {
-            let controller = UICloudSharingController { [container] controller, completion in
+            controller = UICloudSharingController { _, completion in
                 Task {
                     do {
                         let share = try await ShareManager.shared.createShare()
@@ -71,28 +87,22 @@ struct CloudSharingView: UIViewControllerRepresentable {
                     }
                 }
             }
-            controller.delegate = context.coordinator
-            return controller
         }
+        controller.delegate = delegate
+        presenter.present(controller, animated: true)
+    }
+}
+
+private final class SharingDelegate: NSObject, UICloudSharingControllerDelegate {
+    func cloudSharingController(
+        _ csc: UICloudSharingController,
+        failedToSaveShareWithError error: Error
+    ) {
+        // Handle error
     }
 
-    func updateUIViewController(_ uiViewController: UICloudSharingController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    class Coordinator: NSObject, UICloudSharingControllerDelegate {
-        func cloudSharingController(
-            _ csc: UICloudSharingController,
-            failedToSaveShareWithError error: Error
-        ) {
-            // Handle error
-        }
-
-        func itemTitle(for csc: UICloudSharingController) -> String? {
-            "Scribe Family Budget"
-        }
+    func itemTitle(for csc: UICloudSharingController) -> String? {
+        "Scribe Family Budget"
     }
 }
 #endif

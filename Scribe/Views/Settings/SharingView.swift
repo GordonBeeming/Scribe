@@ -2,7 +2,6 @@ import SwiftUI
 import CloudKit
 
 struct SharingView: View {
-    @State private var showingSharingController = false
     @State private var isLoading = false
     @State private var errorMessage: String?
 
@@ -15,14 +14,14 @@ struct SharingView: View {
 
             Section("Share Budget") {
                 Button {
-                    showingSharingController = true
+                    ShareManager.shared.presentSharing()
                 } label: {
                     Label("Invite Family Member", systemImage: "person.badge.plus")
                 }
 
-                if let share = ShareManager.shared.currentShare {
+                if ShareManager.shared.currentShare != nil {
                     Button {
-                        showingSharingController = true
+                        ShareManager.shared.presentSharing()
                     } label: {
                         Label("Manage Sharing", systemImage: "person.2")
                     }
@@ -82,13 +81,6 @@ struct SharingView: View {
                 }
                 isLoading = false
             }
-        }
-        .sheet(isPresented: $showingSharingController) {
-            CloudSharingView(
-                share: ShareManager.shared.currentShare,
-                container: CloudKitManager.shared.container
-            )
-            .ignoresSafeArea()
         }
         .overlay {
             if isLoading {
