@@ -42,7 +42,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.gordonbeeming.scribe
         CODE_SIGN_ENTITLEMENTS: Scribe/Scribe.entitlements
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: 2
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: true
@@ -78,7 +78,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.gordonbeeming.scribe.widget
         CODE_SIGN_ENTITLEMENTS: ScribeWidget/ScribeWidget.entitlements
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: 2
         TARGETED_DEVICE_FAMILY: "1,2"
 
   ScribeWatch:
@@ -112,7 +112,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.gordonbeeming.scribe.watch
         CODE_SIGN_ENTITLEMENTS: ScribeWatch/ScribeWatch.entitlements
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: 2
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - target: ScribeWatchWidgetExtension
@@ -141,7 +141,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.gordonbeeming.scribe.watch.widget
         CODE_SIGN_ENTITLEMENTS: ScribeWatchWidget/ScribeWatchWidget.entitlements
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: 2
 
   ScribeTests:
     type: bundle.unit-test
