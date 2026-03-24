@@ -161,7 +161,7 @@ struct WeeklyBudgetCard: View {
                         Spacer()
                         Text(CurrencyFormatter.format(group.pendingExpenses, currencyCode: "AUD", signStyle: .none))
                             .font(.subheadline.monospacedDigit().bold())
-                            .foregroundStyle(ScribeTheme.error)
+                            .foregroundStyle(ScribeTheme.primaryText)
                     }
                     .padding(.vertical, 4)
                 }
