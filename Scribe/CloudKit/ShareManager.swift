@@ -56,7 +56,9 @@ final class ShareManager: @unchecked Sendable {
     }
 
     func acceptShare(_ metadata: CKShare.Metadata) async throws {
+        logger.info("Accepting share from \(metadata.ownerIdentity.nameComponents?.formatted() ?? "unknown")")
         try await CloudKitManager.shared.container.accept(metadata)
+        logger.info("Share accepted, zone: \(metadata.share.recordID.zoneID.zoneName)")
     }
 }
 

@@ -12,13 +12,20 @@ final class SyncCoordinator: @unchecked Sendable {
 
     private let logger = Logger(subsystem: "com.gordonbeeming.scribe", category: "SyncCoordinator")
     private var syncEngine: CKSyncEngine?
+    private var sharedSyncEngine: CKSyncEngine?
     private var modelContainer: ModelContainer?
 
     private let stateKey = "syncEngineState"
+    private let sharedStateKey = "sharedSyncEngineState"
     private let zoneName = "ScribeBudgetZone"
 
     private var zoneID: CKRecordZone.ID {
         CKRecordZone.ID(zoneName: zoneName, ownerName: CKCurrentUserDefaultName)
+    }
+
+    /// Whether the given engine is the shared database engine (read-only, for receiving shared data)
+    private func isSharedEngine(_ engine: CKSyncEngine) -> Bool {
+        engine === sharedSyncEngine
     }
 
     @MainActor
@@ -59,9 +66,10 @@ final class SyncCoordinator: @unchecked Sendable {
                     return
                 }
 
+                // Private database engine (owns the data, reads + writes)
                 let configuration = CKSyncEngine.Configuration(
                     database: CloudKitManager.shared.privateDatabase,
-                    stateSerialization: loadSyncEngineState(),
+                    stateSerialization: loadSyncEngineState(forKey: stateKey),
                     delegate: self
                 )
                 let engine = CKSyncEngine(configuration)
@@ -72,8 +80,17 @@ final class SyncCoordinator: @unchecked Sendable {
                     .saveZone(CKRecordZone(zoneID: zoneID))
                 ])
 
+                // Shared database engine (read-only, receives data shared by others)
+                let sharedConfig = CKSyncEngine.Configuration(
+                    database: CloudKitManager.shared.sharedDatabase,
+                    stateSerialization: loadSyncEngineState(forKey: sharedStateKey),
+                    delegate: self
+                )
+                let sharedEngine = CKSyncEngine(sharedConfig)
+                self.sharedSyncEngine = sharedEngine
+
                 await MainActor.run { syncStatus = .synced }
-                logger.info("CKSyncEngine started successfully")
+                logger.info("CKSyncEngine started successfully (private + shared)")
             } catch {
                 logger.error("Failed to start sync: \(error.localizedDescription)")
                 await MainActor.run { syncStatus = .error(error.localizedDescription) }
@@ -83,6 +100,24 @@ final class SyncCoordinator: @unchecked Sendable {
 
     func stop() {
         syncEngine = nil
+        sharedSyncEngine = nil
+    }
+
+    /// Trigger an immediate fetch on the shared database engine (e.g. after accepting a share)
+    func fetchSharedChanges() {
+        guard let sharedSyncEngine else {
+            logger.warning("Cannot fetch shared changes: shared sync engine not started")
+            return
+        }
+        let options = CKSyncEngine.FetchChangesOptions()
+        Task {
+            do {
+                try await sharedSyncEngine.fetchChanges(options)
+                logger.info("Shared changes fetch completed")
+            } catch {
+                logger.error("Failed to fetch shared changes: \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: - Push local changes
@@ -167,16 +202,16 @@ final class SyncCoordinator: @unchecked Sendable {
 
     // MARK: - State persistence
 
-    private func loadSyncEngineState() -> CKSyncEngine.State.Serialization? {
-        guard let data = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.data(forKey: stateKey) else {
+    private func loadSyncEngineState(forKey key: String) -> CKSyncEngine.State.Serialization? {
+        guard let data = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.data(forKey: key) else {
             return nil
         }
         return try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: data)
     }
 
-    private func saveSyncEngineState(_ state: CKSyncEngine.State.Serialization) {
+    private func saveSyncEngineState(_ state: CKSyncEngine.State.Serialization, forKey key: String) {
         if let data = try? JSONEncoder().encode(state) {
-            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.set(data, forKey: stateKey)
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.set(data, forKey: key)
         }
     }
 }
@@ -185,18 +220,33 @@ final class SyncCoordinator: @unchecked Sendable {
 
 extension SyncCoordinator: CKSyncEngineDelegate {
 
-    func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) {
+    func handleEvent(_ event: CKSyncEngine.Event, syncEngine engine: CKSyncEngine) {
+        let isShared = isSharedEngine(engine)
+        let engineLabel = isShared ? "shared" : "private"
+
         switch event {
         case .stateUpdate(let stateUpdate):
-            saveSyncEngineState(stateUpdate.stateSerialization)
+            let key = isShared ? sharedStateKey : stateKey
+            saveSyncEngineState(stateUpdate.stateSerialization, forKey: key)
 
         case .accountChange(let accountChange):
-            handleAccountChange(accountChange)
+            if !isShared {
+                handleAccountChange(accountChange)
+            } else {
+                switch accountChange.changeType {
+                case .switchAccounts:
+                    // Clear shared state on account switch
+                    UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.removeObject(forKey: sharedStateKey)
+                default:
+                    break
+                }
+            }
 
         case .fetchedDatabaseChanges(let dbChanges):
-            handleFetchedDatabaseChanges(dbChanges)
+            handleFetchedDatabaseChanges(dbChanges, isShared: isShared)
 
         case .fetchedRecordZoneChanges(let fetchedChanges):
+            logger.info("[\(engineLabel)] Fetched record zone changes: \(fetchedChanges.modifications.count) mods, \(fetchedChanges.deletions.count) dels")
             Task { @MainActor in
                 self.handleFetchedRecordZoneChanges(fetchedChanges)
             }
@@ -205,7 +255,9 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             break
 
         case .sentRecordZoneChanges(let sentChanges):
-            handleSentRecordZoneChanges(sentChanges)
+            if !isShared {
+                handleSentRecordZoneChanges(sentChanges)
+            }
 
         case .willFetchChanges:
             Task { @MainActor in syncStatus = .syncing }
@@ -214,22 +266,29 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             Task { @MainActor in syncStatus = .synced }
 
         case .willSendChanges:
-            Task { @MainActor in syncStatus = .syncing }
+            if !isShared {
+                Task { @MainActor in syncStatus = .syncing }
+            }
 
         case .didSendChanges:
-            Task { @MainActor in syncStatus = .synced }
+            if !isShared {
+                Task { @MainActor in syncStatus = .synced }
+            }
 
         @unknown default:
-            logger.warning("Unknown CKSyncEngine event")
+            logger.warning("[\(engineLabel)] Unknown CKSyncEngine event")
         }
     }
 
     func nextRecordZoneChangeBatch(
         _ context: CKSyncEngine.SendChangesContext,
-        syncEngine: CKSyncEngine
+        syncEngine engine: CKSyncEngine
     ) -> CKSyncEngine.RecordZoneChangeBatch? {
+        // Shared engine is read-only -- never push changes
+        if isSharedEngine(engine) { return nil }
+
         let scope = context.options.scope
-        let pendingChanges = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
+        let pendingChanges = engine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
         guard !pendingChanges.isEmpty, let modelContainer else { return nil }
 
         let zoneID = self.zoneID
@@ -241,7 +300,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             switch change {
             case .saveRecord(let recordID):
                 guard let uuid = UUID(uuidString: recordID.recordName) else {
-                    syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                     continue
                 }
                 if let item = try? bgContext.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
@@ -261,7 +320,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 } else {
                     // Object deleted locally before send — remove from pending
                     logger.info("Record \(recordID.recordName) not found locally, removing from pending")
-                    syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 }
             case .deleteRecord(let recordID):
                 recordIDsToDelete.append(recordID)
@@ -294,19 +353,28 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case .switchAccounts:
             // Different account — clear local data and let the new account's data come in
             logger.info("iCloud account switched — clearing local sync state")
-            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.removeObject(forKey: stateKey)
+            let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+            defaults?.removeObject(forKey: stateKey)
+            defaults?.removeObject(forKey: sharedStateKey)
 
         @unknown default:
             break
         }
     }
 
-    // MARK: - Fetched Database Changes (zone deletions)
+    // MARK: - Fetched Database Changes
 
-    private func handleFetchedDatabaseChanges(_ changes: CKSyncEngine.Event.FetchedDatabaseChanges) {
+    private func handleFetchedDatabaseChanges(_ changes: CKSyncEngine.Event.FetchedDatabaseChanges, isShared: Bool) {
+        let engineLabel = isShared ? "shared" : "private"
+
+        for modification in changes.modifications {
+            logger.info("[\(engineLabel)] Zone modified: \(modification.zoneID.zoneName) (owner: \(modification.zoneID.ownerName))")
+        }
+
         for deletion in changes.deletions {
-            if deletion.zoneID == zoneID {
-                logger.warning("Our zone was deleted from the server — clearing local data")
+            let isOurZone = deletion.zoneID.zoneName == zoneName
+            if isOurZone {
+                logger.warning("[\(engineLabel)] Zone \(deletion.zoneID.zoneName) was deleted — clearing local data")
                 Task { @MainActor in
                     guard let context = modelContainer?.mainContext else { return }
                     DataManagementService.clearAllData(in: context)
