@@ -1,7 +1,10 @@
 import UIKit
 import CloudKit
+import os
 
 class AppDelegate: NSObject, UIApplicationDelegate {
+    private let logger = Logger(subsystem: "com.gordonbeeming.scribe", category: "AppDelegate")
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -19,6 +22,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         options: UIScene.ConnectionOptions
     ) -> UISceneConfiguration {
         let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        config.delegateClass = SceneDelegate.self
         return config
     }
 
@@ -29,12 +33,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         .newData
     }
 
+    // Fallback for non-scene-based delivery (kept for compatibility)
     func application(
         _ application: UIApplication,
         userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata
     ) {
+        logger.info("Received CloudKit share acceptance via app delegate (fallback)")
         Task {
-            try? await ShareManager.shared.acceptShare(cloudKitShareMetadata)
+            await ShareManager.shared.handleShareAcceptance(cloudKitShareMetadata)
         }
     }
 }
