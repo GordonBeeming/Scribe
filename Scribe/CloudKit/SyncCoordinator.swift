@@ -28,6 +28,16 @@ final class SyncCoordinator: @unchecked Sendable {
         engine === sharedSyncEngine
     }
 
+    /// Check if a record's ckRecordData indicates it originated from a shared zone (not the user's own private zone).
+    /// Returns true if the record should be skipped by the private engine.
+    private func isFromSharedZone(_ ckRecordData: Data?) -> Bool {
+        guard let data = ckRecordData,
+              let record = RecordConversion.decodeLastKnownRecord(from: data) else {
+            return false
+        }
+        return record.recordID.zoneID.ownerName != CKCurrentUserDefaultName
+    }
+
     @MainActor
     var syncStatus: SyncStatus = .idle
 
@@ -304,18 +314,46 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     continue
                 }
                 if let item = try? bgContext.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
+                    guard !isFromSharedZone(item.ckRecordData) else {
+                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                        continue
+                    }
                     recordsToSave.append(RecordConversion.record(from: item, zoneID: zoneID))
                 } else if let override_ = try? bgContext.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
+                    guard !isFromSharedZone(override_.ckRecordData) else {
+                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                        continue
+                    }
                     recordsToSave.append(RecordConversion.record(from: override_, zoneID: zoneID))
                 } else if let occurrence = try? bgContext.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
+                    guard !isFromSharedZone(occurrence.ckRecordData) else {
+                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                        continue
+                    }
                     recordsToSave.append(RecordConversion.record(from: occurrence, zoneID: zoneID))
                 } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
+                    guard !isFromSharedZone(member.ckRecordData) else {
+                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                        continue
+                    }
                     recordsToSave.append(RecordConversion.record(from: member, zoneID: zoneID))
                 } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
+                    guard !isFromSharedZone(section.ckRecordData) else {
+                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                        continue
+                    }
                     recordsToSave.append(RecordConversion.record(from: section, zoneID: zoneID))
                 } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
+                    guard !isFromSharedZone(adjustment.ckRecordData) else {
+                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                        continue
+                    }
                     recordsToSave.append(RecordConversion.record(from: adjustment, zoneID: zoneID))
                 } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
+                    guard !isFromSharedZone(preferences.ckRecordData) else {
+                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                        continue
+                    }
                     recordsToSave.append(RecordConversion.record(from: preferences, zoneID: zoneID))
                 } else {
                     // Object deleted locally before send — remove from pending
@@ -372,13 +410,16 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         }
 
         for deletion in changes.deletions {
-            let isOurZone = deletion.zoneID.zoneName == zoneName
-            if isOurZone {
-                logger.warning("[\(engineLabel)] Zone \(deletion.zoneID.zoneName) was deleted — clearing local data")
+            // Only treat this as "our" zone deletion when it matches the private engine's zoneID.
+            let isOurPrivateZoneDeletion = !isShared && (deletion.zoneID == zoneID)
+            if isOurPrivateZoneDeletion {
+                logger.warning("[\(engineLabel)] Our private zone was deleted — clearing local data")
                 Task { @MainActor in
                     guard let context = modelContainer?.mainContext else { return }
                     DataManagementService.clearAllData(in: context)
                 }
+            } else if isShared && deletion.zoneID.zoneName == zoneName {
+                logger.info("[\(engineLabel)] Shared zone revoked: \(deletion.zoneID.zoneName) (owner: \(deletion.zoneID.ownerName))")
             }
         }
     }

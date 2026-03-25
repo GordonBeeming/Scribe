@@ -60,6 +60,18 @@ final class ShareManager: @unchecked Sendable {
         try await CloudKitManager.shared.container.accept(metadata)
         logger.info("Share accepted, zone: \(metadata.share.recordID.zoneID.zoneName)")
     }
+
+    /// Handle the full share acceptance flow: accept the share and fetch shared changes.
+    /// Call this from SceneDelegate or AppDelegate when receiving a CloudKit share.
+    func handleShareAcceptance(_ metadata: CKShare.Metadata) async {
+        do {
+            try await acceptShare(metadata)
+            logger.info("Share accepted successfully, fetching shared changes")
+            SyncCoordinator.shared.fetchSharedChanges()
+        } catch {
+            logger.error("Failed to accept CloudKit share: \(error.localizedDescription)")
+        }
+    }
 }
 
 // MARK: - UICloudSharingController Presentation

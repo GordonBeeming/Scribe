@@ -40,13 +40,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     ) {
         logger.info("Received CloudKit share acceptance via app delegate (fallback)")
         Task {
-            do {
-                try await ShareManager.shared.acceptShare(cloudKitShareMetadata)
-                logger.info("Share accepted successfully, fetching shared changes")
-                SyncCoordinator.shared.fetchSharedChanges()
-            } catch {
-                logger.error("Failed to accept CloudKit share: \(error.localizedDescription)")
-            }
+            await ShareManager.shared.handleShareAcceptance(cloudKitShareMetadata)
         }
     }
 }

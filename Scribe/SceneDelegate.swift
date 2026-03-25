@@ -11,13 +11,7 @@ class SceneDelegate: NSObject, UIWindowSceneDelegate {
     ) {
         logger.info("Received CloudKit share acceptance via scene delegate")
         Task {
-            do {
-                try await ShareManager.shared.acceptShare(cloudKitShareMetadata)
-                logger.info("Share accepted successfully, fetching shared changes")
-                SyncCoordinator.shared.fetchSharedChanges()
-            } catch {
-                logger.error("Failed to accept CloudKit share: \(error.localizedDescription)")
-            }
+            await ShareManager.shared.handleShareAcceptance(cloudKitShareMetadata)
         }
     }
 }
