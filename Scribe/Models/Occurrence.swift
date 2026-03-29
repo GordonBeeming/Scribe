@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import CryptoKit
 
 enum OccurrenceStatus: String, Codable, CaseIterable, Identifiable {
     case pending
@@ -56,7 +57,11 @@ final class Occurrence {
         notes: String? = nil,
         budgetItem: BudgetItem? = nil
     ) {
-        self.id = UUID()
+        if let budgetItem {
+            self.id = Occurrence.deterministicID(budgetItemID: budgetItem.id, dueDate: dueDate)
+        } else {
+            self.id = UUID()
+        }
         self.dueDate = dueDate
         self.expectedAmount = expectedAmount
         self.actualAmount = actualAmount
@@ -66,5 +71,24 @@ final class Occurrence {
         self.createdAt = Date()
         self.modifiedAt = Date()
         self.budgetItem = budgetItem
+    }
+
+    /// Generate a deterministic UUID from a budget item ID and due date.
+    /// Ensures all devices produce the same Occurrence ID for the same item+date,
+    /// preventing duplicate Occurrences when multiple devices auto-confirm or manually confirm.
+    static func deterministicID(budgetItemID: UUID, dueDate: Date) -> UUID {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: dueDate)
+        let input = "\(budgetItemID.uuidString)_\(Int(startOfDay.timeIntervalSince1970))"
+        let hash = SHA256.hash(data: Data(input.utf8))
+        let bytes = Array(hash)
+        // Build UUID from first 16 bytes of SHA-256, setting version 5 and variant bits
+        var uuidBytes = Array(bytes.prefix(16))
+        uuidBytes[6] = (uuidBytes[6] & 0x0F) | 0x50 // version 5
+        uuidBytes[8] = (uuidBytes[8] & 0x3F) | 0x80 // variant 1
+        let uuid = uuidBytes.withUnsafeBufferPointer { buffer -> UUID in
+            buffer.baseAddress!.withMemoryRebound(to: uuid_t.self, capacity: 1) { UUID(uuid: $0.pointee) }
+        }
+        return uuid
     }
 }

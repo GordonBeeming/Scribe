@@ -258,7 +258,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case .fetchedRecordZoneChanges(let fetchedChanges):
             logger.info("[\(engineLabel)] Fetched record zone changes: \(fetchedChanges.modifications.count) mods, \(fetchedChanges.deletions.count) dels")
             Task { @MainActor in
-                self.handleFetchedRecordZoneChanges(fetchedChanges)
+                self.handleFetchedRecordZoneChanges(fetchedChanges, fromSharedEngine: isShared)
             }
 
         case .sentDatabaseChanges:
@@ -266,7 +266,9 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
         case .sentRecordZoneChanges(let sentChanges):
             if !isShared {
-                handleSentRecordZoneChanges(sentChanges)
+                Task { @MainActor in
+                    self.handleSentRecordZoneChanges(sentChanges)
+                }
             }
 
         case .willFetchChanges:
@@ -427,28 +429,43 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     // MARK: - Fetched Record Zone Changes
 
     @MainActor
-    private func handleFetchedRecordZoneChanges(_ changes: CKSyncEngine.Event.FetchedRecordZoneChanges) {
+    private func handleFetchedRecordZoneChanges(_ changes: CKSyncEngine.Event.FetchedRecordZoneChanges, fromSharedEngine: Bool = false) {
         guard let context = modelContainer?.mainContext else { return }
 
+        let engineLabel = fromSharedEngine ? "shared" : "private"
         let sectionCountBefore = (try? context.fetchCount(FetchDescriptor<DashboardSection>())) ?? -1
-        logger.info("handleFetchedRecordZoneChanges: \(changes.modifications.count) modifications, \(changes.deletions.count) deletions (DashboardSections before: \(sectionCountBefore))")
+        logger.info("[\(engineLabel)] handleFetchedRecordZoneChanges: \(changes.modifications.count) modifications, \(changes.deletions.count) deletions (DashboardSections before: \(sectionCountBefore))")
 
         for modification in changes.modifications {
             let record = modification.record
+            let isFromOtherOwner = record.recordID.zoneID.ownerName != CKCurrentUserDefaultName
+
             if record.recordType == RecordConversion.dashboardSectionRecordType {
-                logger.info("Sync: applying DashboardSection modification \(record.recordID.recordName)")
+                logger.info("[\(engineLabel)] Sync: applying DashboardSection modification \(record.recordID.recordName) (owner: \(record.recordID.zoneID.ownerName))")
             }
+
+            // Guard: if the private engine delivers a record from another owner's zone, skip it.
+            // This prevents duplicate inserts when the same record is delivered by both engines.
+            if !fromSharedEngine && isFromOtherOwner {
+                logger.info("[\(engineLabel)] Skipping record \(record.recordID.recordName) from other owner's zone (owner: \(record.recordID.zoneID.ownerName))")
+                continue
+            }
+
             applyFetchedRecord(record, to: context)
         }
 
         for deletion in changes.deletions {
             if deletion.recordType == RecordConversion.dashboardSectionRecordType {
-                logger.warning("Sync: applying DashboardSection DELETION \(deletion.recordID.recordName)")
+                logger.warning("[\(engineLabel)] Sync: applying DashboardSection DELETION \(deletion.recordID.recordName)")
             }
             applyDeletion(deletion.recordID, recordType: deletion.recordType, in: context)
         }
 
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            logger.error("Failed to save fetched record zone changes: \(error.localizedDescription)")
+        }
 
         let sectionCountAfter = (try? context.fetchCount(FetchDescriptor<DashboardSection>())) ?? -1
         if sectionCountBefore != sectionCountAfter {
@@ -508,9 +525,46 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     RecordConversion.applyRecord(record, to: existing)
                 }
                 existing.ckRecordData = ckData
+                // Restore budgetItem relationship if missing (may have been nil if parent wasn't synced yet)
+                if existing.budgetItem == nil,
+                   let ref = record["budgetItemRef"] as? CKRecord.Reference,
+                   let parentUUID = UUID(uuidString: ref.recordID.recordName) {
+                    let parentPred = #Predicate<BudgetItem> { $0.id == parentUUID }
+                    existing.budgetItem = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: parentPred)).first
+                }
             } else {
+                // Check for a duplicate occurrence with same budgetItem + dueDate (created locally with a different UUID)
+                let remoteDueDate = record["dueDate"] as? Date ?? Date()
+                if let ref = record["budgetItemRef"] as? CKRecord.Reference,
+                   let parentUUID = UUID(uuidString: ref.recordID.recordName) {
+                    let calendar = Calendar.current
+                    let dueDateStart = calendar.startOfDay(for: remoteDueDate)
+                    let dueDateEnd = calendar.date(byAdding: .day, value: 1, to: dueDateStart) ?? dueDateStart
+                    let dupPred = #Predicate<Occurrence> {
+                        $0.budgetItem?.id == parentUUID &&
+                        $0.dueDate >= dueDateStart &&
+                        $0.dueDate < dueDateEnd
+                    }
+                    if let localDuplicate = try? context.fetch(FetchDescriptor<Occurrence>(predicate: dupPred)).first {
+                        // Merge: prefer the remote record (it has a CloudKit record ID), update the existing local one
+                        let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
+                        let remoteStatus = OccurrenceStatus(rawValue: record["statusRaw"] as? String ?? "pending") ?? .pending
+                        // Keep whichever has a more "advanced" status (confirmed > skipped > pending)
+                        let shouldApplyRemote = remoteModified >= localDuplicate.modifiedAt
+                            || (remoteStatus == .confirmed && localDuplicate.status != .confirmed)
+                        if shouldApplyRemote {
+                            RecordConversion.applyRecord(record, to: localDuplicate)
+                        }
+                        // Update UUID to match the remote record so future syncs find it
+                        localDuplicate.id = uuid
+                        localDuplicate.ckRecordData = ckData
+                        logger.info("Merged duplicate occurrence \(uuid.uuidString) with local \(localDuplicate.id.uuidString) for budgetItem \(parentUUID.uuidString)")
+                        break
+                    }
+                }
+
                 let occurrence = Occurrence(
-                    dueDate: record["dueDate"] as? Date ?? Date(),
+                    dueDate: remoteDueDate,
                     expectedAmount: (record["expectedAmount"] as? NSNumber)?.decimalValue ?? 0,
                     actualAmount: (record["actualAmount"] as? NSNumber)?.decimalValue,
                     status: OccurrenceStatus(rawValue: record["statusRaw"] as? String ?? "pending") ?? .pending,
@@ -766,55 +820,62 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     }
 
     /// Persist CKRecord system fields after a successful save or when resolving a conflict.
+    @MainActor
     private func updateCKRecordData(from record: CKRecord) {
-        guard let modelContainer,
+        guard let context = modelContainer?.mainContext,
               let uuid = UUID(uuidString: record.recordID.recordName) else { return }
 
         let ckData = RecordConversion.encodeSystemFields(of: record)
-        let bgContext = ModelContext(modelContainer)
 
-        if let item = try? bgContext.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
+        if let item = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
             item.ckRecordData = ckData
-        } else if let override_ = try? bgContext.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let override_ = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
             override_.ckRecordData = ckData
-        } else if let occurrence = try? bgContext.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let occurrence = try? context.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
             occurrence.ckRecordData = ckData
-        } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let member = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
             member.ckRecordData = ckData
-        } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
             section.ckRecordData = ckData
-        } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let adjustment = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
             adjustment.ckRecordData = ckData
-        } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
             preferences.ckRecordData = ckData
         }
 
-        try? bgContext.save()
+        do {
+            try context.save()
+        } catch {
+            logger.error("Failed to save ckRecordData update for \(record.recordID.recordName): \(error.localizedDescription)")
+        }
     }
 
     /// Clear cached CKRecord system fields so next upload creates a fresh record.
+    @MainActor
     private func clearCKRecordData(for recordID: CKRecord.ID) {
-        guard let modelContainer,
+        guard let context = modelContainer?.mainContext,
               let uuid = UUID(uuidString: recordID.recordName) else { return }
 
-        let bgContext = ModelContext(modelContainer)
-
-        if let item = try? bgContext.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
+        if let item = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
             item.ckRecordData = nil
-        } else if let override_ = try? bgContext.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let override_ = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
             override_.ckRecordData = nil
-        } else if let occurrence = try? bgContext.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let occurrence = try? context.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
             occurrence.ckRecordData = nil
-        } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let member = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
             member.ckRecordData = nil
-        } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
             section.ckRecordData = nil
-        } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let adjustment = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
             adjustment.ckRecordData = nil
-        } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
+        } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
             preferences.ckRecordData = nil
         }
 
-        try? bgContext.save()
+        do {
+            try context.save()
+        } catch {
+            logger.error("Failed to save ckRecordData clear for \(recordID.recordName): \(error.localizedDescription)")
+        }
     }
 }

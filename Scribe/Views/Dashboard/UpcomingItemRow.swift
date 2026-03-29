@@ -58,36 +58,42 @@ struct UpcomingItemRow: View {
                 : (item.isConfirmed ? "Undo paid" : "Mark as paid")
             )
 
-            VStack(alignment: .leading) {
-                Text(item.budgetItem.name)
-                    .font(.subheadline)
-                    .strikethrough(item.isConfirmed)
+            Button {
+                onTap?()
+            } label: {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(item.budgetItem.name)
+                            .font(.subheadline)
+                            .strikethrough(item.isConfirmed)
 
-                Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
-                    .font(.caption)
-                    .foregroundStyle(isOverdue ? .orange : ScribeTheme.secondaryText)
+                        Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
+                            .font(.caption)
+                            .foregroundStyle(isOverdue ? .orange : ScribeTheme.secondaryText)
+                    }
+
+                    Spacer()
+
+                    amountDisplay
+                }
+                .contentShape(Rectangle())
             }
-
-            Spacer()
+            .buttonStyle(.plain)
 
             if item.isConfirmed {
                 Button {
                     editAmountText = "\(displayAmount)"
                     showingAmountEditor = true
                 } label: {
-                    amountDisplay
+                    Image(systemName: "pencil.circle")
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                        .imageScale(.small)
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $showingAmountEditor) {
                     amountEditorPopover
                 }
-            } else {
-                amountDisplay
             }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onTap?()
         }
     }
 

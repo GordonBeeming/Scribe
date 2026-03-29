@@ -38,31 +38,37 @@ struct OccurrenceRowView: View {
             }
             .buttonStyle(.plain)
 
-            Text(item.budgetItem.name)
-                .font(.subheadline)
-                .strikethrough(item.isConfirmed || item.isSkipped)
-                .foregroundStyle(item.isSkipped ? ScribeTheme.secondaryText : ScribeTheme.primaryText)
+            Button {
+                onTap?()
+            } label: {
+                HStack {
+                    Text(item.budgetItem.name)
+                        .font(.subheadline)
+                        .strikethrough(item.isConfirmed || item.isSkipped)
+                        .foregroundStyle(item.isSkipped ? ScribeTheme.secondaryText : ScribeTheme.primaryText)
 
-            Spacer()
+                    Spacer()
+
+                    amountDisplay
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
             if item.isConfirmed {
                 Button {
                     editAmountText = "\(displayAmount)"
                     showingAmountEditor = true
                 } label: {
-                    amountDisplay
+                    Image(systemName: "pencil.circle")
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                        .imageScale(.small)
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $showingAmountEditor) {
                     amountEditorPopover
                 }
-            } else {
-                amountDisplay
             }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onTap?()
         }
         .contextMenu {
             if item.isConfirmed {
