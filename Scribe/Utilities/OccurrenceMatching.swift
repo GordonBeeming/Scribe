@@ -1,8 +1,13 @@
 import Foundation
 import SwiftData
 
-/// Centralized occurrence matching and confirmation logic.
-/// Prevents duplicate implementations across Dashboard, Period, and other views.
+/// Centralized occurrence matching and mutation logic.
+/// Keeps all occurrence find/confirm/skip/adjust in one place so Dashboard,
+/// Period, and any future views share identical behavior.
+///
+/// Mutation methods return the affected occurrence ID so callers can push
+/// sync changes. SyncCoordinator is NOT referenced here — this file is
+/// compiled into widget and watch targets that don't include CloudKit.
 enum OccurrenceMatching {
 
     /// Find an existing occurrence for a budget item, matching against both the scheduled
@@ -22,21 +27,22 @@ enum OccurrenceMatching {
         }
     }
 
-    /// Confirm an occurrence, creating one if needed.
+    /// Confirm an occurrence, creating one if needed. Returns the ID to sync.
     @MainActor
+    @discardableResult
     static func confirm(
         budgetItem: BudgetItem,
         dueDate: Date,
         amount: Decimal,
         existingOccurrence: Occurrence?,
         in context: ModelContext
-    ) {
+    ) -> UUID {
         if let existing = existingOccurrence {
             existing.status = .confirmed
             existing.confirmedAt = Date()
             existing.modifiedAt = Date()
             try? context.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
+            return existing.id
         } else {
             let occurrence = Occurrence(
                 dueDate: dueDate,
@@ -47,43 +53,45 @@ enum OccurrenceMatching {
             )
             context.insert(occurrence)
             try? context.save()
-            SyncCoordinator.shared.pushChange(for: occurrence.id)
+            return occurrence.id
         }
     }
 
-    /// Undo a confirmed occurrence back to pending.
+    /// Undo a confirmed occurrence back to pending. Returns the ID to sync.
     @MainActor
+    @discardableResult
     static func undoConfirm(
         occurrence: Occurrence,
         in context: ModelContext
-    ) {
+    ) -> UUID {
         occurrence.status = .pending
         occurrence.confirmedAt = nil
         occurrence.actualAmount = nil
         occurrence.modifiedAt = Date()
         try? context.save()
-        SyncCoordinator.shared.pushChange(for: occurrence.id)
+        return occurrence.id
     }
 
-    /// Skip or unskip an occurrence.
+    /// Skip or unskip an occurrence. Returns the ID to sync.
     @MainActor
+    @discardableResult
     static func toggleSkip(
         budgetItem: BudgetItem,
         dueDate: Date,
         amount: Decimal,
         existingOccurrence: Occurrence?,
         in context: ModelContext
-    ) {
+    ) -> UUID {
         if let existing = existingOccurrence, existing.status == .skipped {
             existing.status = .pending
             existing.modifiedAt = Date()
             try? context.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
+            return existing.id
         } else if let existing = existingOccurrence {
             existing.status = .skipped
             existing.modifiedAt = Date()
             try? context.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
+            return existing.id
         } else {
             let occurrence = Occurrence(
                 dueDate: dueDate,
@@ -93,20 +101,21 @@ enum OccurrenceMatching {
             )
             context.insert(occurrence)
             try? context.save()
-            SyncCoordinator.shared.pushChange(for: occurrence.id)
+            return occurrence.id
         }
     }
 
-    /// Adjust the actual amount on a confirmed occurrence.
+    /// Adjust the actual amount on a confirmed occurrence. Returns the ID to sync.
     @MainActor
+    @discardableResult
     static func adjustAmount(
         occurrence: Occurrence,
         newAmount: Decimal,
         in context: ModelContext
-    ) {
+    ) -> UUID {
         occurrence.actualAmount = newAmount
         occurrence.modifiedAt = Date()
         try? context.save()
-        SyncCoordinator.shared.pushChange(for: occurrence.id)
+        return occurrence.id
     }
 }
