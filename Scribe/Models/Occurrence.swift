@@ -88,10 +88,12 @@ final class Occurrence {
         let input = "\(budgetItemID.uuidString)_\(year)-\(month)-\(day)"
         let hash = SHA256.hash(data: Data(input.utf8))
         let bytes = Array(hash)
-        // Build UUID from first 16 bytes of SHA-256, setting version 5 and variant bits
+        // Build UUID from first 16 bytes of SHA-256.
+        // This produces a deterministic UUID-like identifier for internal use.
+        // We do not force a specific RFC 4122 version to avoid misrepresenting it as UUIDv5.
         var uuidBytes = Array(bytes.prefix(16))
-        uuidBytes[6] = (uuidBytes[6] & 0x0F) | 0x50 // version 5
-        uuidBytes[8] = (uuidBytes[8] & 0x3F) | 0x80 // variant 1
+        // Ensure RFC 4122 variant (10xx...)
+        uuidBytes[8] = (uuidBytes[8] & 0x3F) | 0x80
         let uuid = uuidBytes.withUnsafeBufferPointer { buffer -> UUID in
             buffer.baseAddress!.withMemoryRebound(to: uuid_t.self, capacity: 1) { UUID(uuid: $0.pointee) }
         }

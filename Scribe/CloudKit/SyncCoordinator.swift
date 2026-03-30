@@ -455,6 +455,12 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         }
 
         for deletion in changes.deletions {
+            // Guard: skip deletions from another owner's zone on the private engine (same as modifications)
+            if !fromSharedEngine && deletion.recordID.zoneID.ownerName != CKCurrentUserDefaultName {
+                logger.info("[\(engineLabel)] Skipping deletion \(deletion.recordID.recordName) from other owner's zone (owner: \(deletion.recordID.zoneID.ownerName))")
+                continue
+            }
+
             if deletion.recordType == RecordConversion.dashboardSectionRecordType {
                 logger.warning("[\(engineLabel)] Sync: applying DashboardSection DELETION \(deletion.recordID.recordName)")
             }
