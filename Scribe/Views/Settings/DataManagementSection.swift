@@ -2,19 +2,23 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
+private struct IdentifiableURL: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct DataManagementSection: View {
     @Environment(\.modelContext) private var modelContext
 
     @State private var showDemoDataAlert = false
     @State private var showClearConfirmation = false
-    @State private var showShareSheet = false
     @State private var showFileImporter = false
     @State private var showImportModeAlert = false
     @State private var showSuccessAlert = false
     @State private var showErrorAlert = false
     @State private var successMessage = ""
     @State private var errorMessage = ""
-    @State private var exportFileURL: URL?
+    @State private var exportFileURL: IdentifiableURL?
     @State private var importData: Data?
 
     var body: some View {
@@ -67,10 +71,8 @@ struct DataManagementSection: View {
                 Label("Export Data", systemImage: "square.and.arrow.up")
             }
             .tint(.primary)
-            .sheet(isPresented: $showShareSheet) {
-                if let url = exportFileURL {
-                    ActivityViewRepresentable(activityItems: [url])
-                }
+            .sheet(item: $exportFileURL) { url in
+                ActivityViewRepresentable(activityItems: [url.url])
             }
 
             // Import Data
@@ -117,8 +119,7 @@ struct DataManagementSection: View {
             let fileName = "Scribe-Export-\(formatter.string(from: Date())).json"
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
             try data.write(to: tempURL)
-            exportFileURL = tempURL
-            showShareSheet = true
+            exportFileURL = IdentifiableURL(url: tempURL)
         } catch {
             errorMessage = "Failed to export: \(error.localizedDescription)"
             showErrorAlert = true
