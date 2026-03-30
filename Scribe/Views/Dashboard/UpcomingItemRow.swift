@@ -51,6 +51,8 @@ struct UpcomingItemRow: View {
                 Image(systemName: confirmIconName)
                     .foregroundStyle(item.isConfirmed ? ScribeTheme.success : ScribeTheme.secondaryText)
                     .imageScale(.large)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isIncome

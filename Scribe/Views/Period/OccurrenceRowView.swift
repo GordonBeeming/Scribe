@@ -35,6 +35,8 @@ struct OccurrenceRowView: View {
                 Image(systemName: statusIcon)
                     .foregroundStyle(statusColor)
                     .imageScale(.large)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
