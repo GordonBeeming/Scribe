@@ -8,9 +8,12 @@ final class BudgetItemListViewModel {
     var filterType: ItemType? = nil
 
     func filteredItems(_ items: [BudgetItem]) -> [ItemCategory: [BudgetItem]] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -3, to: Date()) ?? Date()
         let filtered = items.filter { item in
             let matchesSearch = searchText.isEmpty || item.name.localizedCaseInsensitiveContains(searchText)
             let matchesType = filterType == nil || item.type == filterType
+            // Hide closed items after 3 days
+            if let endDate = item.endDate, endDate < cutoff { return false }
             return matchesSearch && matchesType
         }
 
