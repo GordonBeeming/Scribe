@@ -169,13 +169,30 @@ struct DashboardView: View {
 
             let predicate = #Predicate<Occurrence> { $0.id == deterministicId }
             if let orphaned = try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
-                dashboardLogger.info("doConfirmOccurrence: found orphan by deterministicId, repairing")
-                orphaned.budgetItem = item.budgetItem
-                orphaned.status = .confirmed
-                orphaned.confirmedAt = Date()
-                orphaned.modifiedAt = Date()
-                try? modelContext.save()
-                SyncCoordinator.shared.pushChange(for: orphaned.id)
+                dashboardLogger.info("doConfirmOccurrence: found orphan by deterministicId, repairing. orphan.budgetItem=\(orphaned.budgetItem?.id.uuidString ?? "nil") orphan.status=\(orphaned.statusRaw) orphan.dueDate=\(orphaned.dueDate)")
+                // Delete the orphan and create a fresh occurrence instead of trying to repair.
+                // SwiftData can fail to persist relationship changes on orphaned objects.
+                let orphanDueDate = orphaned.dueDate
+                let orphanExpectedAmount = orphaned.expectedAmount
+                let orphanNotes = orphaned.notes
+                modelContext.delete(orphaned)
+                let fresh = Occurrence(
+                    dueDate: orphanDueDate,
+                    expectedAmount: orphanExpectedAmount,
+                    status: .confirmed,
+                    confirmedAt: Date(),
+                    notes: orphanNotes,
+                    budgetItem: item.budgetItem
+                )
+                fresh.id = deterministicId
+                modelContext.insert(fresh)
+                do {
+                    try modelContext.save()
+                    dashboardLogger.info("doConfirmOccurrence: replaced orphan with fresh occurrence \(fresh.id.uuidString) budgetItem=\(fresh.budgetItem?.id.uuidString ?? "nil")")
+                } catch {
+                    dashboardLogger.error("doConfirmOccurrence: SAVE FAILED after orphan replace: \(error.localizedDescription)")
+                }
+                SyncCoordinator.shared.pushChange(for: fresh.id)
                 return
             }
 
@@ -191,13 +208,29 @@ struct DashboardView: View {
             let orphansByDate = (try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: orphanPred))) ?? []
             dashboardLogger.info("doConfirmOccurrence: found \(orphansByDate.count) orphans by date range")
             if let orphaned = orphansByDate.first {
-                dashboardLogger.info("doConfirmOccurrence: repairing orphan by date \(orphaned.id.uuidString)")
-                orphaned.budgetItem = item.budgetItem
-                orphaned.status = .confirmed
-                orphaned.confirmedAt = Date()
-                orphaned.modifiedAt = Date()
-                try? modelContext.save()
-                SyncCoordinator.shared.pushChange(for: orphaned.id)
+                dashboardLogger.info("doConfirmOccurrence: replacing orphan by date \(orphaned.id.uuidString)")
+                let orphanDueDate = orphaned.dueDate
+                let orphanExpectedAmount = orphaned.expectedAmount
+                let orphanNotes = orphaned.notes
+                let orphanId = orphaned.id
+                modelContext.delete(orphaned)
+                let fresh = Occurrence(
+                    dueDate: orphanDueDate,
+                    expectedAmount: orphanExpectedAmount,
+                    status: .confirmed,
+                    confirmedAt: Date(),
+                    notes: orphanNotes,
+                    budgetItem: item.budgetItem
+                )
+                fresh.id = orphanId
+                modelContext.insert(fresh)
+                do {
+                    try modelContext.save()
+                    dashboardLogger.info("doConfirmOccurrence: replaced date orphan with fresh occurrence")
+                } catch {
+                    dashboardLogger.error("doConfirmOccurrence: SAVE FAILED after date orphan replace: \(error.localizedDescription)")
+                }
+                SyncCoordinator.shared.pushChange(for: fresh.id)
                 return
             }
 
