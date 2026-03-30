@@ -774,6 +774,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
     // MARK: - Sent Record Zone Changes (success & error handling)
 
+    @MainActor
     private func handleSentRecordZoneChanges(_ changes: CKSyncEngine.Event.SentRecordZoneChanges) {
         // Update lastKnownRecord for successful saves
         for savedRecord in changes.savedRecords {
