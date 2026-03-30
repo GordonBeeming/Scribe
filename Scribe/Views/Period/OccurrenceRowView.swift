@@ -57,23 +57,16 @@ struct OccurrenceRowView: View {
             }
             .buttonStyle(.plain)
 
+        }
+        .contextMenu {
             if item.isConfirmed {
                 Button {
                     editAmountText = "\(displayAmount)"
                     showingAmountEditor = true
                 } label: {
-                    Image(systemName: "pencil.circle")
-                        .foregroundStyle(ScribeTheme.secondaryText)
-                        .imageScale(.small)
+                    Label("Edit Amount", systemImage: "pencil")
                 }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showingAmountEditor) {
-                    amountEditorPopover
-                }
-            }
-        }
-        .contextMenu {
-            if item.isConfirmed {
+
                 Button {
                     onConfirm()
                 } label: {
@@ -98,6 +91,9 @@ struct OccurrenceRowView: View {
                     Label("Skip", systemImage: "arrow.uturn.right")
                 }
             }
+        }
+        .popover(isPresented: $showingAmountEditor) {
+            amountEditorPopover
         }
     }
 

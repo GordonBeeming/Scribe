@@ -77,9 +77,15 @@ final class Occurrence {
     /// Ensures all devices produce the same Occurrence ID for the same item+date,
     /// preventing duplicate Occurrences when multiple devices auto-confirm or manually confirm.
     static func deterministicID(budgetItemID: UUID, dueDate: Date) -> UUID {
-        let calendar = Calendar.current
-        let startOfDay = calendar.startOfDay(for: dueDate)
-        let input = "\(budgetItemID.uuidString)_\(Int(startOfDay.timeIntervalSince1970))"
+        // Use a fixed calendar and timezone (Gregorian + UTC) so that the same logical
+        // due date produces the same day key on all devices, regardless of locale/timezone.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? calendar.timeZone
+        let components = calendar.dateComponents([.year, .month, .day], from: dueDate)
+        let year = components.year ?? 0
+        let month = components.month ?? 0
+        let day = components.day ?? 0
+        let input = "\(budgetItemID.uuidString)_\(year)-\(month)-\(day)"
         let hash = SHA256.hash(data: Data(input.utf8))
         let bytes = Array(hash)
         // Build UUID from first 16 bytes of SHA-256, setting version 5 and variant bits

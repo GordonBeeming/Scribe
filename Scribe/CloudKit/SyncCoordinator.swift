@@ -555,10 +555,12 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                         if shouldApplyRemote {
                             RecordConversion.applyRecord(record, to: localDuplicate)
                         }
-                        // Update UUID to match the remote record so future syncs find it
+                        // Update UUID to match the remote record so future syncs find it.
+                        // Preserve the original local ID so we can log and diagnose the merge correctly.
+                        let originalLocalId = localDuplicate.id
                         localDuplicate.id = uuid
                         localDuplicate.ckRecordData = ckData
-                        logger.info("Merged duplicate occurrence \(uuid.uuidString) with local \(localDuplicate.id.uuidString) for budgetItem \(parentUUID.uuidString)")
+                        logger.info("Merged duplicate occurrence remote \(uuid.uuidString) with local \(originalLocalId.uuidString) (updated local id to match remote) for budgetItem \(parentUUID.uuidString)")
                         break
                     }
                 }
@@ -776,9 +778,11 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
     @MainActor
     private func handleSentRecordZoneChanges(_ changes: CKSyncEngine.Event.SentRecordZoneChanges) {
-        // Update lastKnownRecord for successful saves
+        guard let context = modelContainer?.mainContext else { return }
+
+        // Batch all updates into a single save to avoid per-record main-thread saves
         for savedRecord in changes.savedRecords {
-            updateCKRecordData(from: savedRecord)
+            updateCKRecordData(from: savedRecord, in: context)
         }
 
         // Handle failures
@@ -791,7 +795,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 // Conflict — server has a newer version. Use server record as base and re-queue.
                 if let serverRecord = error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord {
                     logger.info("Conflict for \(recordID.recordName) — merging with server record")
-                    updateCKRecordData(from: serverRecord)
+                    updateCKRecordData(from: serverRecord, in: context)
                     syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 }
 
@@ -806,7 +810,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             case .unknownItem:
                 // Record doesn't exist on server — clear lastKnownRecord and retry
                 logger.info("Unknown item \(recordID.recordName) — clearing cached record and retrying")
-                clearCKRecordData(for: recordID)
+                clearCKRecordData(for: recordID, in: context)
                 syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
 
             case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
@@ -818,13 +822,19 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 logger.error("Failed to save record \(recordID.recordName): \(error.localizedDescription)")
             }
         }
+
+        // Single save for all batched updates
+        do {
+            try context.save()
+        } catch {
+            logger.error("Failed to save sent record zone changes: \(error.localizedDescription)")
+        }
     }
 
-    /// Persist CKRecord system fields after a successful save or when resolving a conflict.
+    /// Apply CKRecord system fields to the matching local model (no save — caller batches saves).
     @MainActor
-    private func updateCKRecordData(from record: CKRecord) {
-        guard let context = modelContainer?.mainContext,
-              let uuid = UUID(uuidString: record.recordID.recordName) else { return }
+    private func updateCKRecordData(from record: CKRecord, in context: ModelContext) {
+        guard let uuid = UUID(uuidString: record.recordID.recordName) else { return }
 
         let ckData = RecordConversion.encodeSystemFields(of: record)
 
@@ -843,19 +853,12 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
             preferences.ckRecordData = ckData
         }
-
-        do {
-            try context.save()
-        } catch {
-            logger.error("Failed to save ckRecordData update for \(record.recordID.recordName): \(error.localizedDescription)")
-        }
     }
 
-    /// Clear cached CKRecord system fields so next upload creates a fresh record.
+    /// Clear cached CKRecord system fields so next upload creates a fresh record (no save — caller batches saves).
     @MainActor
-    private func clearCKRecordData(for recordID: CKRecord.ID) {
-        guard let context = modelContainer?.mainContext,
-              let uuid = UUID(uuidString: recordID.recordName) else { return }
+    private func clearCKRecordData(for recordID: CKRecord.ID, in context: ModelContext) {
+        guard let uuid = UUID(uuidString: recordID.recordName) else { return }
 
         if let item = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
             item.ckRecordData = nil
@@ -871,12 +874,6 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             adjustment.ckRecordData = nil
         } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
             preferences.ckRecordData = nil
-        }
-
-        do {
-            try context.save()
-        } catch {
-            logger.error("Failed to save ckRecordData clear for \(recordID.recordName): \(error.localizedDescription)")
         }
     }
 }
