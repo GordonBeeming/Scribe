@@ -186,9 +186,12 @@ final class DashboardViewModel {
                     let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
                     guard displayDate >= currentStart && displayDate <= currentEnd else { continue }
                     let amount = item.effectiveAmount(on: date)
+                    // Match against both scheduled date and display date — the occurrence's
+                    // dueDate may have been stored as either depending on which view confirmed it.
                     let existingOccurrence = occurrences.first {
                         $0.budgetItem?.id == item.id &&
-                        calendar.isDate($0.dueDate, inSameDayAs: date)
+                        (calendar.isDate($0.dueDate, inSameDayAs: date) ||
+                         calendar.isDate($0.dueDate, inSameDayAs: displayDate))
                     }
                     weekItems.append(UpcomingItem(
                         id: existingOccurrence?.id ?? UUID(),
