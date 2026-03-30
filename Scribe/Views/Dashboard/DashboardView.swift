@@ -135,7 +135,6 @@ struct DashboardView: View {
     }
 
     private func confirmOccurrence(_ item: DashboardViewModel.UpcomingItem) {
-        dashboardLogger.info("confirmOccurrence: \(item.budgetItem.name) type=\(item.budgetItem.itemType) freq=\(item.budgetItem.frequencyRaw) hasOccurrence=\(item.occurrence != nil) status=\(item.occurrence?.statusRaw ?? "nil")")
         if let existing = item.occurrence, existing.status == .confirmed {
             existing.status = .pending
             existing.confirmedAt = nil
@@ -145,7 +144,6 @@ struct DashboardView: View {
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
             if item.budgetItem.frequency == .irregular {
-                dashboardLogger.info("confirmOccurrence: showing irregular date picker for \(item.budgetItem.name)")
                 irregularConfirmItem = item
                 return
             }
@@ -154,87 +152,13 @@ struct DashboardView: View {
     }
 
     private func doConfirmOccurrence(_ item: DashboardViewModel.UpcomingItem) {
-        dashboardLogger.info("doConfirmOccurrence: \(item.budgetItem.name) hasOccurrence=\(item.occurrence != nil)")
         if let existing = item.occurrence {
-            dashboardLogger.info("doConfirmOccurrence: updating existing occurrence \(existing.id.uuidString)")
             existing.status = .confirmed
             existing.confirmedAt = Date()
             existing.modifiedAt = Date()
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
-            // Check for an orphaned occurrence (synced but missing budgetItem relationship)
-            let deterministicId = Occurrence.deterministicID(budgetItemID: item.budgetItem.id, dueDate: item.dueDate)
-            dashboardLogger.info("doConfirmOccurrence: no existing occurrence, checking orphans. deterministicId=\(deterministicId.uuidString) budgetItemId=\(item.budgetItem.id.uuidString)")
-
-            let predicate = #Predicate<Occurrence> { $0.id == deterministicId }
-            if let orphaned = try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
-                dashboardLogger.info("doConfirmOccurrence: found orphan by deterministicId, repairing. orphan.budgetItem=\(orphaned.budgetItem?.id.uuidString ?? "nil") orphan.status=\(orphaned.statusRaw) orphan.dueDate=\(orphaned.dueDate)")
-                // Delete the orphan and create a fresh occurrence instead of trying to repair.
-                // SwiftData can fail to persist relationship changes on orphaned objects.
-                let orphanDueDate = orphaned.dueDate
-                let orphanExpectedAmount = orphaned.expectedAmount
-                let orphanNotes = orphaned.notes
-                modelContext.delete(orphaned)
-                let fresh = Occurrence(
-                    dueDate: orphanDueDate,
-                    expectedAmount: orphanExpectedAmount,
-                    status: .confirmed,
-                    confirmedAt: Date(),
-                    notes: orphanNotes,
-                    budgetItem: item.budgetItem
-                )
-                fresh.id = deterministicId
-                modelContext.insert(fresh)
-                do {
-                    try modelContext.save()
-                    dashboardLogger.info("doConfirmOccurrence: replaced orphan with fresh occurrence \(fresh.id.uuidString) budgetItem=\(fresh.budgetItem?.id.uuidString ?? "nil")")
-                } catch {
-                    dashboardLogger.error("doConfirmOccurrence: SAVE FAILED after orphan replace: \(error.localizedDescription)")
-                }
-                SyncCoordinator.shared.pushChange(for: fresh.id)
-                return
-            }
-
-            // Check for any occurrence with nil budgetItem on the same day (CloudKit UUID)
-            let calendar = Calendar.current
-            let dayStart = calendar.startOfDay(for: item.dueDate)
-            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
-            let orphanPred = #Predicate<Occurrence> {
-                $0.budgetItem == nil &&
-                $0.dueDate >= dayStart &&
-                $0.dueDate < dayEnd
-            }
-            let orphansByDate = (try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: orphanPred))) ?? []
-            dashboardLogger.info("doConfirmOccurrence: found \(orphansByDate.count) orphans by date range")
-            if let orphaned = orphansByDate.first {
-                dashboardLogger.info("doConfirmOccurrence: replacing orphan by date \(orphaned.id.uuidString)")
-                let orphanDueDate = orphaned.dueDate
-                let orphanExpectedAmount = orphaned.expectedAmount
-                let orphanNotes = orphaned.notes
-                let orphanId = orphaned.id
-                modelContext.delete(orphaned)
-                let fresh = Occurrence(
-                    dueDate: orphanDueDate,
-                    expectedAmount: orphanExpectedAmount,
-                    status: .confirmed,
-                    confirmedAt: Date(),
-                    notes: orphanNotes,
-                    budgetItem: item.budgetItem
-                )
-                fresh.id = orphanId
-                modelContext.insert(fresh)
-                do {
-                    try modelContext.save()
-                    dashboardLogger.info("doConfirmOccurrence: replaced date orphan with fresh occurrence")
-                } catch {
-                    dashboardLogger.error("doConfirmOccurrence: SAVE FAILED after date orphan replace: \(error.localizedDescription)")
-                }
-                SyncCoordinator.shared.pushChange(for: fresh.id)
-                return
-            }
-
-            dashboardLogger.info("doConfirmOccurrence: creating new occurrence")
             let occurrence = Occurrence(
                 dueDate: item.dueDate,
                 expectedAmount: item.amount,
@@ -243,12 +167,7 @@ struct DashboardView: View {
                 budgetItem: item.budgetItem
             )
             modelContext.insert(occurrence)
-            do {
-                try modelContext.save()
-                dashboardLogger.info("doConfirmOccurrence: saved new occurrence \(occurrence.id.uuidString)")
-            } catch {
-                dashboardLogger.error("doConfirmOccurrence: SAVE FAILED \(error.localizedDescription)")
-            }
+            try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
     }
