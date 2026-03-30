@@ -30,9 +30,16 @@ struct BudgetItemRowView: View {
                     }
                 }
 
-                Text(item.frequency.displayName)
-                    .font(.caption)
-                    .foregroundStyle(ScribeTheme.secondaryText)
+                HStack(spacing: 4) {
+                    Text(item.frequency.displayName)
+                    if let dayOfMonth = item.dayOfMonth {
+                        Text("· Day \(dayOfMonth)")
+                    } else if let refDate = item.referenceDate {
+                        Text("· \(refDate, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(ScribeTheme.secondaryText)
             }
 
             Spacer()
