@@ -79,10 +79,12 @@ final class PeriodViewModel {
             var dayItems: [DayItem] = []
 
             for placed in placedItems where calendar.isDate(placed.displayDate, inSameDayAs: current) {
-                let existingOccurrence = occurrences.first {
-                    $0.budgetItem?.id == placed.budgetItem.id &&
-                    calendar.isDate($0.dueDate, inSameDayAs: placed.scheduledDate)
-                }
+                let existingOccurrence = OccurrenceMatching.findOccurrence(
+                    for: placed.budgetItem,
+                    scheduledDate: placed.scheduledDate,
+                    displayDate: placed.displayDate,
+                    in: occurrences
+                )
                 dayItems.append(DayItem(
                     id: existingOccurrence?.id ?? UUID(),
                     budgetItem: placed.budgetItem,

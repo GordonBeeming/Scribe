@@ -232,49 +232,34 @@ struct PeriodView: View {
 
     private func confirmItem(_ item: PeriodViewModel.DayItem, on date: Date) {
         if let existing = item.occurrence, existing.status == .confirmed {
-            existing.status = .pending
-            existing.confirmedAt = nil
-            existing.actualAmount = nil
-            existing.modifiedAt = Date()
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
+            let id = OccurrenceMatching.undoConfirm(occurrence: existing, in: modelContext)
+            SyncCoordinator.shared.pushChange(for: id)
         } else {
-            // For irregular items, show the next-date picker after confirming
             if item.budgetItem.frequency == .irregular {
                 irregularConfirmDate = date
                 irregularConfirmItem = item
                 return
             }
-            doConfirm(item, on: date)
-        }
-    }
-
-    private func doConfirm(_ item: PeriodViewModel.DayItem, on date: Date) {
-        if let existing = item.occurrence {
-            existing.status = .confirmed
-            existing.confirmedAt = Date()
-            existing.modifiedAt = Date()
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
-        } else {
-            let occurrence = Occurrence(
+            let id = OccurrenceMatching.confirm(
+                budgetItem: item.budgetItem,
                 dueDate: date,
-                expectedAmount: item.amount,
-                status: .confirmed,
-                confirmedAt: Date(),
-                budgetItem: item.budgetItem
+                amount: item.amount,
+                existingOccurrence: item.occurrence,
+                in: modelContext
             )
-            modelContext.insert(occurrence)
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: occurrence.id)
+            SyncCoordinator.shared.pushChange(for: id)
         }
     }
 
     private func scheduleNextIrregular(_ item: PeriodViewModel.DayItem, nextDate: Date) {
-        // Confirm the current occurrence
-        doConfirm(item, on: irregularConfirmDate)
-
-        // Update the budget item's reference date to the next appointment
+        let id = OccurrenceMatching.confirm(
+            budgetItem: item.budgetItem,
+            dueDate: irregularConfirmDate,
+            amount: item.amount,
+            existingOccurrence: item.occurrence,
+            in: modelContext
+        )
+        SyncCoordinator.shared.pushChange(for: id)
         item.budgetItem.referenceDate = nextDate
         item.budgetItem.modifiedAt = Date()
         try? modelContext.save()
@@ -283,34 +268,19 @@ struct PeriodView: View {
 
     private func adjustItemAmount(_ item: PeriodViewModel.DayItem, newAmount: Decimal) {
         guard let occurrence = item.occurrence else { return }
-        occurrence.actualAmount = newAmount
-        occurrence.modifiedAt = Date()
-        try? modelContext.save()
-        SyncCoordinator.shared.pushChange(for: occurrence.id)
+        let id = OccurrenceMatching.adjustAmount(occurrence: occurrence, newAmount: newAmount, in: modelContext)
+        SyncCoordinator.shared.pushChange(for: id)
     }
 
     private func skipItem(_ item: PeriodViewModel.DayItem, on date: Date) {
-        if let existing = item.occurrence, existing.status == .skipped {
-            existing.status = .pending
-            existing.modifiedAt = Date()
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
-        } else if let existing = item.occurrence {
-            existing.status = .skipped
-            existing.modifiedAt = Date()
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
-        } else {
-            let occurrence = Occurrence(
-                dueDate: date,
-                expectedAmount: item.amount,
-                status: .skipped,
-                budgetItem: item.budgetItem
-            )
-            modelContext.insert(occurrence)
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: occurrence.id)
-        }
+        let id = OccurrenceMatching.toggleSkip(
+            budgetItem: item.budgetItem,
+            dueDate: date,
+            amount: item.amount,
+            existingOccurrence: item.occurrence,
+            in: modelContext
+        )
+        SyncCoordinator.shared.pushChange(for: id)
     }
 }
 

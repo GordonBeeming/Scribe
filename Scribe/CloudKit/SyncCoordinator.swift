@@ -436,7 +436,24 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         let sectionCountBefore = (try? context.fetchCount(FetchDescriptor<DashboardSection>())) ?? -1
         logger.info("[\(engineLabel)] handleFetchedRecordZoneChanges: \(changes.modifications.count) modifications, \(changes.deletions.count) deletions (DashboardSections before: \(sectionCountBefore))")
 
-        for modification in changes.modifications {
+        // Sort modifications so parent records (BudgetItem, FamilyMember) are processed before
+        // children (Occurrence, AmountOverride) that reference them via budgetItemRef.
+        // Without this, child records inserted before their parent have nil budgetItem relationships.
+        let parentTypes: Set<String> = [
+            RecordConversion.budgetItemRecordType,
+            RecordConversion.familyMemberRecordType,
+            RecordConversion.dashboardSectionRecordType,
+            RecordConversion.quickAdjustmentRecordType,
+            RecordConversion.userPreferencesRecordType
+        ]
+        let sortedModifications = changes.modifications.sorted { a, b in
+            let aIsParent = parentTypes.contains(a.record.recordType)
+            let bIsParent = parentTypes.contains(b.record.recordType)
+            if aIsParent != bIsParent { return aIsParent }
+            return false
+        }
+
+        for modification in sortedModifications {
             let record = modification.record
             let isFromOtherOwner = record.recordID.zoneID.ownerName != CKCurrentUserDefaultName
 
@@ -444,20 +461,34 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 logger.info("[\(engineLabel)] Sync: applying DashboardSection modification \(record.recordID.recordName) (owner: \(record.recordID.zoneID.ownerName))")
             }
 
-            // Guard: if the private engine delivers a record from another owner's zone, skip it.
-            // This prevents duplicate inserts when the same record is delivered by both engines.
+            // Guard: prevent duplicate processing of records delivered by both engines.
+            // Private engine: skip records from other owners' zones (handled by shared engine)
+            // Shared engine: skip records from our OWN zone (already handled by private engine)
             if !fromSharedEngine && isFromOtherOwner {
-                logger.info("[\(engineLabel)] Skipping record \(record.recordID.recordName) from other owner's zone (owner: \(record.recordID.zoneID.ownerName))")
+                logger.info("[\(engineLabel)] Skipping record \(record.recordID.recordName) from other owner's zone")
+                continue
+            }
+            if fromSharedEngine && !isFromOtherOwner {
+                logger.info("[\(engineLabel)] Skipping own record \(record.recordID.recordName) from shared engine (private engine handles these)")
                 continue
             }
 
             applyFetchedRecord(record, to: context)
         }
 
+        // Second pass: repair child records whose parent wasn't available during first pass.
+        // Uses the original CKRecord objects (which contain budgetItemRef custom fields)
+        // because ckRecordData only stores system fields and cannot be used for relationship repair.
+        repairOrphanedRelationships(from: sortedModifications.map(\.record), in: context)
+
         for deletion in changes.deletions {
-            // Guard: skip deletions from another owner's zone on the private engine (same as modifications)
-            if !fromSharedEngine && deletion.recordID.zoneID.ownerName != CKCurrentUserDefaultName {
-                logger.info("[\(engineLabel)] Skipping deletion \(deletion.recordID.recordName) from other owner's zone (owner: \(deletion.recordID.zoneID.ownerName))")
+            let deletionIsFromOtherOwner = deletion.recordID.zoneID.ownerName != CKCurrentUserDefaultName
+            if !fromSharedEngine && deletionIsFromOtherOwner {
+                logger.info("[\(engineLabel)] Skipping deletion \(deletion.recordID.recordName) from other owner's zone")
+                continue
+            }
+            if fromSharedEngine && !deletionIsFromOtherOwner {
+                logger.info("[\(engineLabel)] Skipping own deletion \(deletion.recordID.recordName) from shared engine")
                 continue
             }
 
@@ -764,6 +795,57 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             }
         default:
             break
+        }
+    }
+
+    // MARK: - Orphaned Relationship Repair
+
+    /// Repair Occurrences and AmountOverrides that have nil budgetItem.
+    /// Uses the original CKRecord objects from the current batch (which contain budgetItemRef)
+    /// because ckRecordData only stores system fields and does NOT include custom fields.
+    @MainActor
+    private func repairOrphanedRelationships(from records: [CKRecord], in context: ModelContext) {
+        // Build a lookup of record UUID → parent UUID from the raw CKRecords
+        let childTypes: Set<String> = [
+            RecordConversion.occurrenceRecordType,
+            RecordConversion.amountOverrideRecordType
+        ]
+        var parentMap: [UUID: UUID] = [:]
+        for record in records where childTypes.contains(record.recordType) {
+            guard let uuid = UUID(uuidString: record.recordID.recordName),
+                  let ref = record["budgetItemRef"] as? CKRecord.Reference,
+                  let parentUUID = UUID(uuidString: ref.recordID.recordName) else { continue }
+            parentMap[uuid] = parentUUID
+        }
+
+        guard !parentMap.isEmpty else { return }
+
+        // Repair orphaned Occurrences
+        let orphanedOccurrences = (try? context.fetch(
+            FetchDescriptor<Occurrence>(predicate: #Predicate { $0.budgetItem == nil })
+        )) ?? []
+
+        for occurrence in orphanedOccurrences {
+            guard let parentUUID = parentMap[occurrence.id] else { continue }
+            let pred = #Predicate<BudgetItem> { $0.id == parentUUID }
+            if let parent = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: pred)).first {
+                occurrence.budgetItem = parent
+                logger.info("Repaired orphaned occurrence \(occurrence.id.uuidString) → budgetItem \(parentUUID.uuidString)")
+            }
+        }
+
+        // Repair orphaned AmountOverrides
+        let orphanedOverrides = (try? context.fetch(
+            FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.budgetItem == nil })
+        )) ?? []
+
+        for override_ in orphanedOverrides {
+            guard let parentUUID = parentMap[override_.id] else { continue }
+            let pred = #Predicate<BudgetItem> { $0.id == parentUUID }
+            if let parent = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: pred)).first {
+                override_.budgetItem = parent
+                logger.info("Repaired orphaned amountOverride \(override_.id.uuidString) → budgetItem \(parentUUID.uuidString)")
+            }
         }
     }
 
