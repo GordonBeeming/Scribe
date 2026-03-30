@@ -81,21 +81,35 @@ struct UpcomingItemRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
+        }
+        .contextMenu {
             if item.isConfirmed {
                 Button {
                     editAmountText = "\(displayAmount)"
                     showingAmountEditor = true
                 } label: {
-                    Image(systemName: "pencil.circle")
-                        .foregroundStyle(ScribeTheme.secondaryText)
-                        .imageScale(.small)
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showingAmountEditor) {
-                    amountEditorPopover
+                    Label("Edit Amount", systemImage: "pencil")
                 }
             }
+
+            Button {
+                onConfirm()
+            } label: {
+                if item.isConfirmed {
+                    Label(isIncome ? "Undo Received" : "Undo Paid", systemImage: "arrow.uturn.backward")
+                } else {
+                    Label(isIncome ? "Mark as Received" : "Mark as Paid", systemImage: "checkmark.circle")
+                }
+            }
+
+            Button {
+                onSkip()
+            } label: {
+                Label("Skip", systemImage: "arrow.uturn.right")
+            }
+        }
+        .popover(isPresented: $showingAmountEditor) {
+            amountEditorPopover
         }
     }
 
