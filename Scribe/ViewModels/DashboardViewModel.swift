@@ -44,10 +44,12 @@ final class DashboardViewModel {
             for date in dates {
                 if let itemEndDate = budgetItem.endDate, date > calendar.startOfDay(for: itemEndDate) { continue }
                 let amount = budgetItem.effectiveAmount(on: date)
-                let existingOccurrence = occurrences.first {
-                    $0.budgetItem?.id == budgetItem.id &&
-                    calendar.isDate($0.dueDate, inSameDayAs: date)
-                }
+                let existingOccurrence = OccurrenceMatching.findOccurrence(
+                    for: budgetItem,
+                    scheduledDate: date,
+                    displayDate: date,
+                    in: occurrences
+                )
                 items.append(UpcomingItem(
                     id: existingOccurrence?.id ?? UUID(),
                     budgetItem: budgetItem,
@@ -186,13 +188,12 @@ final class DashboardViewModel {
                     let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
                     guard displayDate >= currentStart && displayDate <= currentEnd else { continue }
                     let amount = item.effectiveAmount(on: date)
-                    // Match against both scheduled date and display date — the occurrence's
-                    // dueDate may have been stored as either depending on which view confirmed it.
-                    let existingOccurrence = occurrences.first {
-                        $0.budgetItem?.id == item.id &&
-                        (calendar.isDate($0.dueDate, inSameDayAs: date) ||
-                         calendar.isDate($0.dueDate, inSameDayAs: displayDate))
-                    }
+                    let existingOccurrence = OccurrenceMatching.findOccurrence(
+                        for: item,
+                        scheduledDate: date,
+                        displayDate: displayDate,
+                        in: occurrences
+                    )
                     weekItems.append(UpcomingItem(
                         id: existingOccurrence?.id ?? UUID(),
                         budgetItem: item,

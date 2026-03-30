@@ -23,10 +23,7 @@ struct DashboardView: View {
 
     private func adjustAmount(_ item: DashboardViewModel.UpcomingItem, newAmount: Decimal) {
         guard let occurrence = item.occurrence else { return }
-        occurrence.actualAmount = newAmount
-        occurrence.modifiedAt = Date()
-        try? modelContext.save()
-        SyncCoordinator.shared.pushChange(for: occurrence.id)
+        OccurrenceMatching.adjustAmount(occurrence: occurrence, newAmount: newAmount, in: modelContext)
     }
 
     var body: some View {
@@ -136,39 +133,19 @@ struct DashboardView: View {
 
     private func confirmOccurrence(_ item: DashboardViewModel.UpcomingItem) {
         if let existing = item.occurrence, existing.status == .confirmed {
-            existing.status = .pending
-            existing.confirmedAt = nil
-            existing.actualAmount = nil
-            existing.modifiedAt = Date()
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
+            OccurrenceMatching.undoConfirm(occurrence: existing, in: modelContext)
         } else {
             if item.budgetItem.frequency == .irregular {
                 irregularConfirmItem = item
                 return
             }
-            doConfirmOccurrence(item)
-        }
-    }
-
-    private func doConfirmOccurrence(_ item: DashboardViewModel.UpcomingItem) {
-        if let existing = item.occurrence {
-            existing.status = .confirmed
-            existing.confirmedAt = Date()
-            existing.modifiedAt = Date()
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
-        } else {
-            let occurrence = Occurrence(
+            OccurrenceMatching.confirm(
+                budgetItem: item.budgetItem,
                 dueDate: item.dueDate,
-                expectedAmount: item.amount,
-                status: .confirmed,
-                confirmedAt: Date(),
-                budgetItem: item.budgetItem
+                amount: item.amount,
+                existingOccurrence: item.occurrence,
+                in: modelContext
             )
-            modelContext.insert(occurrence)
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
     }
 
@@ -250,27 +227,13 @@ struct DashboardView: View {
     }
 
     private func skipOccurrence(_ item: DashboardViewModel.UpcomingItem) {
-        if let existing = item.occurrence, existing.status == .skipped {
-            existing.status = .pending
-            existing.modifiedAt = Date()
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
-        } else if let existing = item.occurrence {
-            existing.status = .skipped
-            existing.modifiedAt = Date()
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: existing.id)
-        } else {
-            let occurrence = Occurrence(
-                dueDate: item.dueDate,
-                expectedAmount: item.amount,
-                status: .skipped,
-                budgetItem: item.budgetItem
-            )
-            modelContext.insert(occurrence)
-            try? modelContext.save()
-            SyncCoordinator.shared.pushChange(for: occurrence.id)
-        }
+        OccurrenceMatching.toggleSkip(
+            budgetItem: item.budgetItem,
+            dueDate: item.dueDate,
+            amount: item.amount,
+            existingOccurrence: item.occurrence,
+            in: modelContext
+        )
     }
 }
 
