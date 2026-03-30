@@ -84,11 +84,12 @@ struct ModelTests {
         #expect(id1 == id2)
     }
 
-    @Test("Occurrence deterministicID is same for different times on same day")
+    @Test("Occurrence deterministicID is same for different times on same UTC day")
     func occurrenceDeterministicIDSameDay() {
         let budgetItemID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
-        let morning = Date(timeIntervalSince1970: 1_700_000_000) // morning UTC
-        let evening = Date(timeIntervalSince1970: 1_700_000_000 + 50_000) // ~14h later
+        // 2023-11-15 00:00:00 UTC and 2023-11-15 12:00:00 UTC — same UTC day
+        let morning = Date(timeIntervalSince1970: 1_700_006_400)
+        let evening = Date(timeIntervalSince1970: 1_700_006_400 + 43_200) // +12h
 
         let id1 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: morning)
         let id2 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: evening)
