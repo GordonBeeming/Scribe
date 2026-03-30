@@ -159,6 +159,40 @@ struct DashboardView: View {
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
+            // Check for an orphaned occurrence (synced but missing budgetItem relationship)
+            // that matches the deterministic ID we'd generate. If found, repair and confirm it
+            // instead of inserting a duplicate.
+            let deterministicId = Occurrence.deterministicID(budgetItemID: item.budgetItem.id, dueDate: item.dueDate)
+            let predicate = #Predicate<Occurrence> { $0.id == deterministicId }
+            if let orphaned = try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
+                orphaned.budgetItem = item.budgetItem
+                orphaned.status = .confirmed
+                orphaned.confirmedAt = Date()
+                orphaned.modifiedAt = Date()
+                try? modelContext.save()
+                SyncCoordinator.shared.pushChange(for: orphaned.id)
+                return
+            }
+
+            // Also check for any occurrence matching budgetItem+date with nil budgetItem (CloudKit UUID)
+            let calendar = Calendar.current
+            let dayStart = calendar.startOfDay(for: item.dueDate)
+            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
+            let orphanPred = #Predicate<Occurrence> {
+                $0.budgetItem == nil &&
+                $0.dueDate >= dayStart &&
+                $0.dueDate < dayEnd
+            }
+            if let orphaned = try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: orphanPred)).first {
+                orphaned.budgetItem = item.budgetItem
+                orphaned.status = .confirmed
+                orphaned.confirmedAt = Date()
+                orphaned.modifiedAt = Date()
+                try? modelContext.save()
+                SyncCoordinator.shared.pushChange(for: orphaned.id)
+                return
+            }
+
             let occurrence = Occurrence(
                 dueDate: item.dueDate,
                 expectedAmount: item.amount,

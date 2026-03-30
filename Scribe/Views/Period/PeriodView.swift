@@ -257,6 +257,37 @@ struct PeriodView: View {
             try? modelContext.save()
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
+            // Check for orphaned occurrences (synced but missing budgetItem relationship)
+            let deterministicId = Occurrence.deterministicID(budgetItemID: item.budgetItem.id, dueDate: date)
+            let predicate = #Predicate<Occurrence> { $0.id == deterministicId }
+            if let orphaned = try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
+                orphaned.budgetItem = item.budgetItem
+                orphaned.status = .confirmed
+                orphaned.confirmedAt = Date()
+                orphaned.modifiedAt = Date()
+                try? modelContext.save()
+                SyncCoordinator.shared.pushChange(for: orphaned.id)
+                return
+            }
+
+            let calendar = Calendar.current
+            let dayStart = calendar.startOfDay(for: date)
+            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
+            let orphanPred = #Predicate<Occurrence> {
+                $0.budgetItem == nil &&
+                $0.dueDate >= dayStart &&
+                $0.dueDate < dayEnd
+            }
+            if let orphaned = try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: orphanPred)).first {
+                orphaned.budgetItem = item.budgetItem
+                orphaned.status = .confirmed
+                orphaned.confirmedAt = Date()
+                orphaned.modifiedAt = Date()
+                try? modelContext.save()
+                SyncCoordinator.shared.pushChange(for: orphaned.id)
+                return
+            }
+
             let occurrence = Occurrence(
                 dueDate: date,
                 expectedAmount: item.amount,

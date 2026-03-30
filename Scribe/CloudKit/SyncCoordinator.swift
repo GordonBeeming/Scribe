@@ -436,7 +436,24 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         let sectionCountBefore = (try? context.fetchCount(FetchDescriptor<DashboardSection>())) ?? -1
         logger.info("[\(engineLabel)] handleFetchedRecordZoneChanges: \(changes.modifications.count) modifications, \(changes.deletions.count) deletions (DashboardSections before: \(sectionCountBefore))")
 
-        for modification in changes.modifications {
+        // Sort modifications so parent records (BudgetItem, FamilyMember) are processed before
+        // children (Occurrence, AmountOverride) that reference them via budgetItemRef.
+        // Without this, child records inserted before their parent have nil budgetItem relationships.
+        let parentTypes: Set<String> = [
+            RecordConversion.budgetItemRecordType,
+            RecordConversion.familyMemberRecordType,
+            RecordConversion.dashboardSectionRecordType,
+            RecordConversion.quickAdjustmentRecordType,
+            RecordConversion.userPreferencesRecordType
+        ]
+        let sortedModifications = changes.modifications.sorted { a, b in
+            let aIsParent = parentTypes.contains(a.record.recordType)
+            let bIsParent = parentTypes.contains(b.record.recordType)
+            if aIsParent != bIsParent { return aIsParent }
+            return false
+        }
+
+        for modification in sortedModifications {
             let record = modification.record
             let isFromOtherOwner = record.recordID.zoneID.ownerName != CKCurrentUserDefaultName
 
@@ -453,6 +470,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
             applyFetchedRecord(record, to: context)
         }
+
+        // Second pass: repair any Occurrences/AmountOverrides with nil budgetItem
+        // (can happen if parent arrived in a different batch or was processed out of order)
+        repairOrphanedRelationships(in: context)
 
         for deletion in changes.deletions {
             // Guard: skip deletions from another owner's zone on the private engine (same as modifications)
@@ -764,6 +785,46 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             }
         default:
             break
+        }
+    }
+
+    // MARK: - Orphaned Relationship Repair
+
+    /// Repair Occurrences and AmountOverrides that have nil budgetItem.
+    /// This happens when child records are synced before their parent BudgetItem
+    /// (e.g. fresh install, records arrive across multiple batches).
+    @MainActor
+    private func repairOrphanedRelationships(in context: ModelContext) {
+        let orphanedOccurrences = (try? context.fetch(
+            FetchDescriptor<Occurrence>(predicate: #Predicate { $0.budgetItem == nil })
+        )) ?? []
+
+        for occurrence in orphanedOccurrences {
+            guard let data = occurrence.ckRecordData,
+                  let record = RecordConversion.decodeLastKnownRecord(from: data),
+                  let ref = record["budgetItemRef"] as? CKRecord.Reference,
+                  let parentUUID = UUID(uuidString: ref.recordID.recordName) else { continue }
+            let pred = #Predicate<BudgetItem> { $0.id == parentUUID }
+            if let parent = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: pred)).first {
+                occurrence.budgetItem = parent
+                logger.info("Repaired orphaned occurrence \(occurrence.id.uuidString) → budgetItem \(parentUUID.uuidString)")
+            }
+        }
+
+        let orphanedOverrides = (try? context.fetch(
+            FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.budgetItem == nil })
+        )) ?? []
+
+        for override_ in orphanedOverrides {
+            guard let data = override_.ckRecordData,
+                  let record = RecordConversion.decodeLastKnownRecord(from: data),
+                  let ref = record["budgetItemRef"] as? CKRecord.Reference,
+                  let parentUUID = UUID(uuidString: ref.recordID.recordName) else { continue }
+            let pred = #Predicate<BudgetItem> { $0.id == parentUUID }
+            if let parent = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: pred)).first {
+                override_.budgetItem = parent
+                logger.info("Repaired orphaned amountOverride \(override_.id.uuidString) → budgetItem \(parentUUID.uuidString)")
+            }
         }
     }
 
