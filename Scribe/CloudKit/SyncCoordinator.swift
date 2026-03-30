@@ -461,10 +461,15 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 logger.info("[\(engineLabel)] Sync: applying DashboardSection modification \(record.recordID.recordName) (owner: \(record.recordID.zoneID.ownerName))")
             }
 
-            // Guard: if the private engine delivers a record from another owner's zone, skip it.
-            // This prevents duplicate inserts when the same record is delivered by both engines.
+            // Guard: prevent duplicate processing of records delivered by both engines.
+            // Private engine: skip records from other owners' zones (handled by shared engine)
+            // Shared engine: skip records from our OWN zone (already handled by private engine)
             if !fromSharedEngine && isFromOtherOwner {
-                logger.info("[\(engineLabel)] Skipping record \(record.recordID.recordName) from other owner's zone (owner: \(record.recordID.zoneID.ownerName))")
+                logger.info("[\(engineLabel)] Skipping record \(record.recordID.recordName) from other owner's zone")
+                continue
+            }
+            if fromSharedEngine && !isFromOtherOwner {
+                logger.info("[\(engineLabel)] Skipping own record \(record.recordID.recordName) from shared engine (private engine handles these)")
                 continue
             }
 
@@ -477,9 +482,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         repairOrphanedRelationships(from: sortedModifications.map(\.record), in: context)
 
         for deletion in changes.deletions {
-            // Guard: skip deletions from another owner's zone on the private engine (same as modifications)
-            if !fromSharedEngine && deletion.recordID.zoneID.ownerName != CKCurrentUserDefaultName {
-                logger.info("[\(engineLabel)] Skipping deletion \(deletion.recordID.recordName) from other owner's zone (owner: \(deletion.recordID.zoneID.ownerName))")
+            let deletionIsFromOtherOwner = deletion.recordID.zoneID.ownerName != CKCurrentUserDefaultName
+            if !fromSharedEngine && deletionIsFromOtherOwner {
+                logger.info("[\(engineLabel)] Skipping deletion \(deletion.recordID.recordName) from other owner's zone")
+                continue
+            }
+            if fromSharedEngine && !deletionIsFromOtherOwner {
+                logger.info("[\(engineLabel)] Skipping own deletion \(deletion.recordID.recordName) from shared engine")
                 continue
             }
 

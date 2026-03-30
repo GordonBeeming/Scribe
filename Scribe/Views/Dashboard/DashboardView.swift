@@ -135,6 +135,7 @@ struct DashboardView: View {
     }
 
     private func confirmOccurrence(_ item: DashboardViewModel.UpcomingItem) {
+        dashboardLogger.info("confirmOccurrence: \(item.budgetItem.name) type=\(item.budgetItem.itemType) freq=\(item.budgetItem.frequencyRaw) hasOccurrence=\(item.occurrence != nil) status=\(item.occurrence?.statusRaw ?? "nil")")
         if let existing = item.occurrence, existing.status == .confirmed {
             existing.status = .pending
             existing.confirmedAt = nil
@@ -144,6 +145,7 @@ struct DashboardView: View {
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
             if item.budgetItem.frequency == .irregular {
+                dashboardLogger.info("confirmOccurrence: showing irregular date picker for \(item.budgetItem.name)")
                 irregularConfirmItem = item
                 return
             }
@@ -152,7 +154,9 @@ struct DashboardView: View {
     }
 
     private func doConfirmOccurrence(_ item: DashboardViewModel.UpcomingItem) {
+        dashboardLogger.info("doConfirmOccurrence: \(item.budgetItem.name) hasOccurrence=\(item.occurrence != nil)")
         if let existing = item.occurrence {
+            dashboardLogger.info("doConfirmOccurrence: updating existing occurrence \(existing.id.uuidString)")
             existing.status = .confirmed
             existing.confirmedAt = Date()
             existing.modifiedAt = Date()
@@ -160,11 +164,12 @@ struct DashboardView: View {
             SyncCoordinator.shared.pushChange(for: existing.id)
         } else {
             // Check for an orphaned occurrence (synced but missing budgetItem relationship)
-            // that matches the deterministic ID we'd generate. If found, repair and confirm it
-            // instead of inserting a duplicate.
             let deterministicId = Occurrence.deterministicID(budgetItemID: item.budgetItem.id, dueDate: item.dueDate)
+            dashboardLogger.info("doConfirmOccurrence: no existing occurrence, checking orphans. deterministicId=\(deterministicId.uuidString) budgetItemId=\(item.budgetItem.id.uuidString)")
+
             let predicate = #Predicate<Occurrence> { $0.id == deterministicId }
             if let orphaned = try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
+                dashboardLogger.info("doConfirmOccurrence: found orphan by deterministicId, repairing")
                 orphaned.budgetItem = item.budgetItem
                 orphaned.status = .confirmed
                 orphaned.confirmedAt = Date()
@@ -174,7 +179,7 @@ struct DashboardView: View {
                 return
             }
 
-            // Also check for any occurrence matching budgetItem+date with nil budgetItem (CloudKit UUID)
+            // Check for any occurrence with nil budgetItem on the same day (CloudKit UUID)
             let calendar = Calendar.current
             let dayStart = calendar.startOfDay(for: item.dueDate)
             let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
@@ -183,7 +188,10 @@ struct DashboardView: View {
                 $0.dueDate >= dayStart &&
                 $0.dueDate < dayEnd
             }
-            if let orphaned = try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: orphanPred)).first {
+            let orphansByDate = (try? modelContext.fetch(FetchDescriptor<Occurrence>(predicate: orphanPred))) ?? []
+            dashboardLogger.info("doConfirmOccurrence: found \(orphansByDate.count) orphans by date range")
+            if let orphaned = orphansByDate.first {
+                dashboardLogger.info("doConfirmOccurrence: repairing orphan by date \(orphaned.id.uuidString)")
                 orphaned.budgetItem = item.budgetItem
                 orphaned.status = .confirmed
                 orphaned.confirmedAt = Date()
@@ -193,6 +201,7 @@ struct DashboardView: View {
                 return
             }
 
+            dashboardLogger.info("doConfirmOccurrence: creating new occurrence")
             let occurrence = Occurrence(
                 dueDate: item.dueDate,
                 expectedAmount: item.amount,
@@ -201,7 +210,12 @@ struct DashboardView: View {
                 budgetItem: item.budgetItem
             )
             modelContext.insert(occurrence)
-            try? modelContext.save()
+            do {
+                try modelContext.save()
+                dashboardLogger.info("doConfirmOccurrence: saved new occurrence \(occurrence.id.uuidString)")
+            } catch {
+                dashboardLogger.error("doConfirmOccurrence: SAVE FAILED \(error.localizedDescription)")
+            }
             SyncCoordinator.shared.pushChange(for: occurrence.id)
         }
     }
