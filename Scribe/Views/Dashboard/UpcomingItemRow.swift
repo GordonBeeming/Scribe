@@ -51,6 +51,8 @@ struct UpcomingItemRow: View {
                 Image(systemName: confirmIconName)
                     .foregroundStyle(item.isConfirmed ? ScribeTheme.success : ScribeTheme.secondaryText)
                     .imageScale(.large)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isIncome
@@ -58,36 +60,56 @@ struct UpcomingItemRow: View {
                 : (item.isConfirmed ? "Undo paid" : "Mark as paid")
             )
 
-            VStack(alignment: .leading) {
-                Text(item.budgetItem.name)
-                    .font(.subheadline)
-                    .strikethrough(item.isConfirmed)
+            Button {
+                onTap?()
+            } label: {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(item.budgetItem.name)
+                            .font(.subheadline)
+                            .strikethrough(item.isConfirmed)
 
-                Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
-                    .font(.caption)
-                    .foregroundStyle(isOverdue ? .orange : ScribeTheme.secondaryText)
+                        Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
+                            .font(.caption)
+                            .foregroundStyle(isOverdue ? .orange : ScribeTheme.secondaryText)
+                    }
+
+                    Spacer()
+
+                    amountDisplay
+                }
+                .contentShape(Rectangle())
             }
-
-            Spacer()
-
+            .buttonStyle(.plain)
+        }
+        .contextMenu {
             if item.isConfirmed {
                 Button {
                     editAmountText = "\(displayAmount)"
                     showingAmountEditor = true
                 } label: {
-                    amountDisplay
+                    Label("Edit Amount", systemImage: "pencil")
                 }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showingAmountEditor) {
-                    amountEditorPopover
+            }
+
+            Button {
+                onConfirm()
+            } label: {
+                if item.isConfirmed {
+                    Label(isIncome ? "Undo Received" : "Undo Paid", systemImage: "arrow.uturn.backward")
+                } else {
+                    Label(isIncome ? "Mark as Received" : "Mark as Paid", systemImage: "checkmark.circle")
                 }
-            } else {
-                amountDisplay
+            }
+
+            Button {
+                onSkip()
+            } label: {
+                Label(item.isSkipped ? "Undo Skip" : "Skip", systemImage: "arrow.uturn.right")
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onTap?()
+        .popover(isPresented: $showingAmountEditor) {
+            amountEditorPopover
         }
     }
 

@@ -35,37 +35,43 @@ struct OccurrenceRowView: View {
                 Image(systemName: statusIcon)
                     .foregroundStyle(statusColor)
                     .imageScale(.large)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                item.isConfirmed ? "Undo confirm" :
+                item.isSkipped ? "Undo skip" :
+                "Confirm"
+            )
+
+            Button {
+                onTap?()
+            } label: {
+                HStack {
+                    Text(item.budgetItem.name)
+                        .font(.subheadline)
+                        .strikethrough(item.isConfirmed || item.isSkipped)
+                        .foregroundStyle(item.isSkipped ? ScribeTheme.secondaryText : ScribeTheme.primaryText)
+
+                    Spacer()
+
+                    amountDisplay
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            Text(item.budgetItem.name)
-                .font(.subheadline)
-                .strikethrough(item.isConfirmed || item.isSkipped)
-                .foregroundStyle(item.isSkipped ? ScribeTheme.secondaryText : ScribeTheme.primaryText)
-
-            Spacer()
-
+        }
+        .contextMenu {
             if item.isConfirmed {
                 Button {
                     editAmountText = "\(displayAmount)"
                     showingAmountEditor = true
                 } label: {
-                    amountDisplay
+                    Label("Edit Amount", systemImage: "pencil")
                 }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showingAmountEditor) {
-                    amountEditorPopover
-                }
-            } else {
-                amountDisplay
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onTap?()
-        }
-        .contextMenu {
-            if item.isConfirmed {
+
                 Button {
                     onConfirm()
                 } label: {
@@ -90,6 +96,9 @@ struct OccurrenceRowView: View {
                     Label("Skip", systemImage: "arrow.uturn.right")
                 }
             }
+        }
+        .popover(isPresented: $showingAmountEditor) {
+            amountEditorPopover
         }
     }
 

@@ -73,6 +73,54 @@ struct ModelTests {
         #expect(occurrence.status == .confirmed)
     }
 
+    @Test("Occurrence deterministicID is stable for same budgetItem and date")
+    func occurrenceDeterministicIDStable() {
+        let budgetItemID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let date = Date(timeIntervalSince1970: 1_700_000_000) // 2023-11-14
+
+        let id1 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: date)
+        let id2 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: date)
+
+        #expect(id1 == id2)
+    }
+
+    @Test("Occurrence deterministicID is same for different times on same UTC day")
+    func occurrenceDeterministicIDSameDay() {
+        let budgetItemID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        // 2023-11-15 00:00:00 UTC and 2023-11-15 12:00:00 UTC — same UTC day
+        let morning = Date(timeIntervalSince1970: 1_700_006_400)
+        let evening = Date(timeIntervalSince1970: 1_700_006_400 + 43_200) // +12h
+
+        let id1 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: morning)
+        let id2 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: evening)
+
+        #expect(id1 == id2)
+    }
+
+    @Test("Occurrence deterministicID differs for different dates")
+    func occurrenceDeterministicIDDifferentDates() {
+        let budgetItemID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let day1 = Date(timeIntervalSince1970: 1_700_000_000) // 2023-11-14
+        let day2 = Date(timeIntervalSince1970: 1_700_100_000) // later date (more than 1 day later)
+
+        let id1 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: day1)
+        let id2 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: day2)
+
+        #expect(id1 != id2)
+    }
+
+    @Test("Occurrence deterministicID differs for different budgetItems")
+    func occurrenceDeterministicIDDifferentItems() {
+        let itemA = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let itemB = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let id1 = Occurrence.deterministicID(budgetItemID: itemA, dueDate: date)
+        let id2 = Occurrence.deterministicID(budgetItemID: itemB, dueDate: date)
+
+        #expect(id1 != id2)
+    }
+
     // MARK: - Enums
 
     @Test("Frequency has correct usesReferenceDate")

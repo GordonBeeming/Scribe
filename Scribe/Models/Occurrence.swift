@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import CryptoKit
 
 enum OccurrenceStatus: String, Codable, CaseIterable, Identifiable {
     case pending
@@ -56,7 +57,11 @@ final class Occurrence {
         notes: String? = nil,
         budgetItem: BudgetItem? = nil
     ) {
-        self.id = UUID()
+        if let budgetItem {
+            self.id = Occurrence.deterministicID(budgetItemID: budgetItem.id, dueDate: dueDate)
+        } else {
+            self.id = UUID()
+        }
         self.dueDate = dueDate
         self.expectedAmount = expectedAmount
         self.actualAmount = actualAmount
@@ -66,5 +71,32 @@ final class Occurrence {
         self.createdAt = Date()
         self.modifiedAt = Date()
         self.budgetItem = budgetItem
+    }
+
+    /// Generate a deterministic UUID from a budget item ID and due date.
+    /// Ensures all devices produce the same Occurrence ID for the same item+date,
+    /// preventing duplicate Occurrences when multiple devices auto-confirm or manually confirm.
+    static func deterministicID(budgetItemID: UUID, dueDate: Date) -> UUID {
+        // Use a fixed calendar and timezone (Gregorian + UTC) so that the same logical
+        // due date produces the same day key on all devices, regardless of locale/timezone.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? calendar.timeZone
+        let components = calendar.dateComponents([.year, .month, .day], from: dueDate)
+        let year = components.year ?? 0
+        let month = components.month ?? 0
+        let day = components.day ?? 0
+        let input = "\(budgetItemID.uuidString)_\(year)-\(month)-\(day)"
+        let hash = SHA256.hash(data: Data(input.utf8))
+        let bytes = Array(hash)
+        // Build UUID from first 16 bytes of SHA-256.
+        // This produces a deterministic UUID-like identifier for internal use.
+        // We do not force a specific RFC 4122 version to avoid misrepresenting it as UUIDv5.
+        var uuidBytes = Array(bytes.prefix(16))
+        // Ensure RFC 4122 variant (10xx...)
+        uuidBytes[8] = (uuidBytes[8] & 0x3F) | 0x80
+        let uuid = uuidBytes.withUnsafeBufferPointer { buffer -> UUID in
+            buffer.baseAddress!.withMemoryRebound(to: uuid_t.self, capacity: 1) { UUID(uuid: $0.pointee) }
+        }
+        return uuid
     }
 }
