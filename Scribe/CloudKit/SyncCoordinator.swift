@@ -537,7 +537,9 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 let remoteDueDate = record["dueDate"] as? Date ?? Date()
                 if let ref = record["budgetItemRef"] as? CKRecord.Reference,
                    let parentUUID = UUID(uuidString: ref.recordID.recordName) {
-                    let calendar = Calendar.current
+                    // Use the same Gregorian+UTC calendar as deterministicID for consistent day boundaries
+                    var calendar = Calendar(identifier: .gregorian)
+                    calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? calendar.timeZone
                     let dueDateStart = calendar.startOfDay(for: remoteDueDate)
                     let dueDateEnd = calendar.date(byAdding: .day, value: 1, to: dueDateStart) ?? dueDateStart
                     let dupPred = #Predicate<Occurrence> {

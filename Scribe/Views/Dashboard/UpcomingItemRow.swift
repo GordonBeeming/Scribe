@@ -105,7 +105,7 @@ struct UpcomingItemRow: View {
             Button {
                 onSkip()
             } label: {
-                Label("Skip", systemImage: "arrow.uturn.right")
+                Label(item.isSkipped ? "Undo Skip" : "Skip", systemImage: "arrow.uturn.right")
             }
         }
         .popover(isPresented: $showingAmountEditor) {

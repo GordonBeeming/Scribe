@@ -101,7 +101,7 @@ struct ModelTests {
     func occurrenceDeterministicIDDifferentDates() {
         let budgetItemID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let day1 = Date(timeIntervalSince1970: 1_700_000_000) // 2023-11-14
-        let day2 = Date(timeIntervalSince1970: 1_700_100_000) // next day
+        let day2 = Date(timeIntervalSince1970: 1_700_100_000) // later date (more than 1 day later)
 
         let id1 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: day1)
         let id2 = Occurrence.deterministicID(budgetItemID: budgetItemID, dueDate: day2)
