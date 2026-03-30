@@ -39,6 +39,11 @@ struct OccurrenceRowView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(
+                item.isConfirmed ? "Undo confirm" :
+                item.isSkipped ? "Undo skip" :
+                "Confirm"
+            )
 
             Button {
                 onTap?()
