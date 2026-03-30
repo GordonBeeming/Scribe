@@ -471,9 +471,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             applyFetchedRecord(record, to: context)
         }
 
-        // Second pass: repair any Occurrences/AmountOverrides with nil budgetItem
-        // (can happen if parent arrived in a different batch or was processed out of order)
-        repairOrphanedRelationships(in: context)
+        // Second pass: repair child records whose parent wasn't available during first pass.
+        // Uses the original CKRecord objects (which contain budgetItemRef custom fields)
+        // because ckRecordData only stores system fields and cannot be used for relationship repair.
+        repairOrphanedRelationships(from: sortedModifications.map(\.record), in: context)
 
         for deletion in changes.deletions {
             // Guard: skip deletions from another owner's zone on the private engine (same as modifications)
@@ -791,19 +792,32 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     // MARK: - Orphaned Relationship Repair
 
     /// Repair Occurrences and AmountOverrides that have nil budgetItem.
-    /// This happens when child records are synced before their parent BudgetItem
-    /// (e.g. fresh install, records arrive across multiple batches).
+    /// Uses the original CKRecord objects from the current batch (which contain budgetItemRef)
+    /// because ckRecordData only stores system fields and does NOT include custom fields.
     @MainActor
-    private func repairOrphanedRelationships(in context: ModelContext) {
+    private func repairOrphanedRelationships(from records: [CKRecord], in context: ModelContext) {
+        // Build a lookup of record UUID → parent UUID from the raw CKRecords
+        let childTypes: Set<String> = [
+            RecordConversion.occurrenceRecordType,
+            RecordConversion.amountOverrideRecordType
+        ]
+        var parentMap: [UUID: UUID] = [:]
+        for record in records where childTypes.contains(record.recordType) {
+            guard let uuid = UUID(uuidString: record.recordID.recordName),
+                  let ref = record["budgetItemRef"] as? CKRecord.Reference,
+                  let parentUUID = UUID(uuidString: ref.recordID.recordName) else { continue }
+            parentMap[uuid] = parentUUID
+        }
+
+        guard !parentMap.isEmpty else { return }
+
+        // Repair orphaned Occurrences
         let orphanedOccurrences = (try? context.fetch(
             FetchDescriptor<Occurrence>(predicate: #Predicate { $0.budgetItem == nil })
         )) ?? []
 
         for occurrence in orphanedOccurrences {
-            guard let data = occurrence.ckRecordData,
-                  let record = RecordConversion.decodeLastKnownRecord(from: data),
-                  let ref = record["budgetItemRef"] as? CKRecord.Reference,
-                  let parentUUID = UUID(uuidString: ref.recordID.recordName) else { continue }
+            guard let parentUUID = parentMap[occurrence.id] else { continue }
             let pred = #Predicate<BudgetItem> { $0.id == parentUUID }
             if let parent = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: pred)).first {
                 occurrence.budgetItem = parent
@@ -811,15 +825,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             }
         }
 
+        // Repair orphaned AmountOverrides
         let orphanedOverrides = (try? context.fetch(
             FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.budgetItem == nil })
         )) ?? []
 
         for override_ in orphanedOverrides {
-            guard let data = override_.ckRecordData,
-                  let record = RecordConversion.decodeLastKnownRecord(from: data),
-                  let ref = record["budgetItemRef"] as? CKRecord.Reference,
-                  let parentUUID = UUID(uuidString: ref.recordID.recordName) else { continue }
+            guard let parentUUID = parentMap[override_.id] else { continue }
             let pred = #Predicate<BudgetItem> { $0.id == parentUUID }
             if let parent = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: pred)).first {
                 override_.budgetItem = parent
