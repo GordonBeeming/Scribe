@@ -38,6 +38,81 @@ final class SyncCoordinator: @unchecked Sendable {
         return record.recordID.zoneID.ownerName != CKCurrentUserDefaultName
     }
 
+    /// Extract the CKRecordZone.ID from cached ckRecordData. Returns nil if data is absent or invalid.
+    private func zoneIDFromRecordData(_ ckRecordData: Data?) -> CKRecordZone.ID? {
+        guard let data = ckRecordData,
+              let record = RecordConversion.decodeLastKnownRecord(from: data) else {
+            return nil
+        }
+        return record.recordID.zoneID
+    }
+
+    /// Determine whether a model (by UUID) belongs to a shared zone.
+    /// Checks the record's own ckRecordData first, then falls back to its parent BudgetItem's ckRecordData
+    /// (for Occurrences and AmountOverrides that were created locally for a shared budget item).
+    /// Returns the shared zone ID if shared, nil if owned or unknown.
+    private func sharedZoneIDForRecord(id: UUID, in context: ModelContext) -> CKRecordZone.ID? {
+        // Check Occurrence
+        if let occurrence = try? context.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == id })).first {
+            if let z = zoneIDFromRecordData(occurrence.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            // New local occurrence for a shared budget item
+            if let parentData = occurrence.budgetItem?.ckRecordData,
+               let z = zoneIDFromRecordData(parentData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            return nil
+        }
+        // Check AmountOverride
+        if let override_ = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == id })).first {
+            if let z = zoneIDFromRecordData(override_.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            if let parentData = override_.budgetItem?.ckRecordData,
+               let z = zoneIDFromRecordData(parentData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            return nil
+        }
+        // Check BudgetItem
+        if let item = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == id })).first {
+            if let z = zoneIDFromRecordData(item.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            return nil
+        }
+        // Check FamilyMember
+        if let member = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == id })).first {
+            if let z = zoneIDFromRecordData(member.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            return nil
+        }
+        // Check DashboardSection
+        if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == id })).first {
+            if let z = zoneIDFromRecordData(section.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            return nil
+        }
+        // Check QuickAdjustment
+        if let adjustment = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == id })).first {
+            if let z = zoneIDFromRecordData(adjustment.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            return nil
+        }
+        // Check UserPreferences
+        if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == id })).first {
+            if let z = zoneIDFromRecordData(preferences.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
+                return z
+            }
+            return nil
+        }
+        return nil
+    }
+
     @MainActor
     var syncStatus: SyncStatus = .idle
 
@@ -137,77 +212,147 @@ final class SyncCoordinator: @unchecked Sendable {
         syncEngine?.state.add(pendingRecordZoneChanges: changes)
     }
 
+    func pushSharedChanges(for recordIDs: [CKRecord.ID]) {
+        let changes = recordIDs.map { CKSyncEngine.PendingRecordZoneChange.saveRecord($0) }
+        sharedSyncEngine?.state.add(pendingRecordZoneChanges: changes)
+    }
+
     func pushDeletion(for recordIDs: [CKRecord.ID]) {
         let changes = recordIDs.map { CKSyncEngine.PendingRecordZoneChange.deleteRecord($0) }
         syncEngine?.state.add(pendingRecordZoneChanges: changes)
     }
 
-    /// Push a single model object by its UUID
+    func pushSharedDeletion(for recordIDs: [CKRecord.ID]) {
+        let changes = recordIDs.map { CKSyncEngine.PendingRecordZoneChange.deleteRecord($0) }
+        sharedSyncEngine?.state.add(pendingRecordZoneChanges: changes)
+    }
+
+    /// Push a single model object by its UUID, routing to the correct engine (private or shared).
     func pushChange(for id: UUID) {
-        let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
-        pushChanges(for: [recordID])
+        guard let modelContainer else { return }
+        let context = ModelContext(modelContainer)
+        if let sharedZone = sharedZoneIDForRecord(id: id, in: context) {
+            let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: sharedZone)
+            logger.info("Routing push for \(id.uuidString) to shared engine (zone owner: \(sharedZone.ownerName))")
+            pushSharedChanges(for: [recordID])
+        } else {
+            let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
+            pushChanges(for: [recordID])
+        }
     }
 
-    /// Push deletion for a single model object by its UUID
+    /// Push a model change when the caller already has the ckRecordData (avoids redundant DB fetch).
+    /// Pass the record's own ckRecordData, plus the parent's ckRecordData for child records (Occurrence, AmountOverride).
+    func pushChange(for id: UUID, ckRecordData: Data?, parentCKRecordData: Data? = nil) {
+        if let sharedZone = sharedZoneFromCKData(ckRecordData, parentCKRecordData: parentCKRecordData) {
+            let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: sharedZone)
+            logger.info("Routing push for \(id.uuidString) to shared engine (zone owner: \(sharedZone.ownerName))")
+            pushSharedChanges(for: [recordID])
+        } else {
+            let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
+            pushChanges(for: [recordID])
+        }
+    }
+
+    /// Push deletion for a single model object by its UUID, routing to the correct engine.
     func pushDeletion(for id: UUID) {
-        let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
-        pushDeletion(for: [recordID])
+        guard let modelContainer else { return }
+        let context = ModelContext(modelContainer)
+        if let sharedZone = sharedZoneIDForRecord(id: id, in: context) {
+            let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: sharedZone)
+            logger.info("Routing deletion for \(id.uuidString) to shared engine (zone owner: \(sharedZone.ownerName))")
+            pushSharedDeletion(for: [recordID])
+        } else {
+            let recordID = CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)
+            pushDeletion(for: [recordID])
+        }
     }
 
-    /// Push all local data to CloudKit. Called on .signIn and available manually.
-    func pushAllLocalData() {
+    /// Determine shared zone from already-available ckRecordData, avoiding a DB fetch.
+    private func sharedZoneFromCKData(_ ckRecordData: Data?, parentCKRecordData: Data? = nil) -> CKRecordZone.ID? {
+        if let z = zoneIDFromRecordData(ckRecordData), z.ownerName != CKCurrentUserDefaultName {
+            return z
+        }
+        if let parentData = parentCKRecordData,
+           let z = zoneIDFromRecordData(parentData), z.ownerName != CKCurrentUserDefaultName {
+            return z
+        }
+        return nil
+    }
+
+    /// Push all local data to CloudKit and fetch shared changes. Called on .signIn and available manually.
+    /// Returns the total number of records queued for push.
+    @discardableResult
+    func pushAllLocalData() -> Int {
         guard let modelContainer else {
             logger.warning("Cannot push all data: no model container")
-            return
+            return 0
         }
 
         let bgContext = ModelContext(modelContainer)
-        var recordIDs: [CKRecord.ID] = []
+        var ownedRecordIDs: [CKRecord.ID] = []
+        var sharedRecordIDs: [CKRecord.ID] = []
+
+        /// Classify a record as owned or shared based on its ckRecordData (or parent's for child records).
+        func classify(id: UUID, ckRecordData: Data?, parentCKRecordData: Data? = nil) {
+            if let sharedZone = zoneIDFromRecordData(ckRecordData),
+               sharedZone.ownerName != CKCurrentUserDefaultName {
+                sharedRecordIDs.append(CKRecord.ID(recordName: id.uuidString, zoneID: sharedZone))
+            } else if let parentData = parentCKRecordData,
+                      let sharedZone = zoneIDFromRecordData(parentData),
+                      sharedZone.ownerName != CKCurrentUserDefaultName {
+                sharedRecordIDs.append(CKRecord.ID(recordName: id.uuidString, zoneID: sharedZone))
+            } else {
+                ownedRecordIDs.append(CKRecord.ID(recordName: id.uuidString, zoneID: zoneID))
+            }
+        }
 
         if let items = try? bgContext.fetch(FetchDescriptor<BudgetItem>()) {
-            recordIDs.append(contentsOf: items.map {
-                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
-            })
+            for item in items { classify(id: item.id, ckRecordData: item.ckRecordData) }
         }
         if let overrides = try? bgContext.fetch(FetchDescriptor<AmountOverride>()) {
-            recordIDs.append(contentsOf: overrides.map {
-                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
-            })
+            for override_ in overrides {
+                classify(id: override_.id, ckRecordData: override_.ckRecordData, parentCKRecordData: override_.budgetItem?.ckRecordData)
+            }
         }
         if let occurrences = try? bgContext.fetch(FetchDescriptor<Occurrence>()) {
-            recordIDs.append(contentsOf: occurrences.map {
-                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
-            })
+            for occurrence in occurrences {
+                classify(id: occurrence.id, ckRecordData: occurrence.ckRecordData, parentCKRecordData: occurrence.budgetItem?.ckRecordData)
+            }
         }
         if let members = try? bgContext.fetch(FetchDescriptor<FamilyMember>()) {
-            recordIDs.append(contentsOf: members.map {
-                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
-            })
+            for member in members { classify(id: member.id, ckRecordData: member.ckRecordData) }
         }
         if let sections = try? bgContext.fetch(FetchDescriptor<DashboardSection>()) {
-            recordIDs.append(contentsOf: sections.map {
-                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
-            })
+            for section in sections { classify(id: section.id, ckRecordData: section.ckRecordData) }
         }
         if let adjustments = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>()) {
-            recordIDs.append(contentsOf: adjustments.map {
-                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
-            })
+            for adjustment in adjustments { classify(id: adjustment.id, ckRecordData: adjustment.ckRecordData) }
         }
         if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>()) {
-            recordIDs.append(contentsOf: preferences.map {
-                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
-            })
+            for pref in preferences { classify(id: pref.id, ckRecordData: pref.ckRecordData) }
         }
 
-        if !recordIDs.isEmpty {
+        let totalCount = ownedRecordIDs.count + sharedRecordIDs.count
+
+        if !ownedRecordIDs.isEmpty {
             // Ensure zone is saved first
             syncEngine?.state.add(pendingDatabaseChanges: [
                 .saveZone(CKRecordZone(zoneID: zoneID))
             ])
-            pushChanges(for: recordIDs)
-            logger.info("Queued \(recordIDs.count) records for push to CloudKit")
+            pushChanges(for: ownedRecordIDs)
+            logger.info("Queued \(ownedRecordIDs.count) owned records for push via private engine")
         }
+
+        if !sharedRecordIDs.isEmpty {
+            pushSharedChanges(for: sharedRecordIDs)
+            logger.info("Queued \(sharedRecordIDs.count) shared records for push via shared engine")
+        }
+
+        // Also fetch latest shared data
+        fetchSharedChanges()
+
+        return totalCount
     }
 
     // MARK: - State persistence
@@ -265,10 +410,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             break
 
         case .sentRecordZoneChanges(let sentChanges):
-            if !isShared {
-                Task { @MainActor in
-                    self.handleSentRecordZoneChanges(sentChanges)
-                }
+            Task { @MainActor in
+                self.handleSentRecordZoneChanges(sentChanges, fromSharedEngine: isShared)
             }
 
         case .willFetchChanges:
@@ -278,14 +421,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             Task { @MainActor in syncStatus = .synced }
 
         case .willSendChanges:
-            if !isShared {
-                Task { @MainActor in syncStatus = .syncing }
-            }
+            Task { @MainActor in syncStatus = .syncing }
 
         case .didSendChanges:
-            if !isShared {
-                Task { @MainActor in syncStatus = .synced }
-            }
+            Task { @MainActor in syncStatus = .synced }
 
         @unknown default:
             logger.warning("[\(engineLabel)] Unknown CKSyncEngine event")
@@ -296,17 +435,30 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine engine: CKSyncEngine
     ) -> CKSyncEngine.RecordZoneChangeBatch? {
-        // Shared engine is read-only -- never push changes
-        if isSharedEngine(engine) { return nil }
+        let isShared = isSharedEngine(engine)
+        let engineLabel = isShared ? "shared" : "private"
 
         let scope = context.options.scope
         let pendingChanges = engine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
         guard !pendingChanges.isEmpty, let modelContainer else { return nil }
 
-        let zoneID = self.zoneID
         let bgContext = ModelContext(modelContainer)
         var recordsToSave: [CKRecord] = []
         var recordIDsToDelete: [CKRecord.ID] = []
+
+        /// Re-route a misrouted record to the correct engine instead of silently dropping it.
+        func rerouteToCorrectEngine(_ recordID: CKRecord.ID, uuid: UUID, ckRecordData: Data?, parentCKRecordData: Data? = nil) {
+            engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+            if let sharedZone = sharedZoneFromCKData(ckRecordData, parentCKRecordData: parentCKRecordData) {
+                let correctedID = CKRecord.ID(recordName: uuid.uuidString, zoneID: sharedZone)
+                logger.info("[\(engineLabel)] Re-routing \(recordID.recordName) to shared engine")
+                sharedSyncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(correctedID)])
+            } else {
+                let correctedID = CKRecord.ID(recordName: uuid.uuidString, zoneID: zoneID)
+                logger.info("[\(engineLabel)] Re-routing \(recordID.recordName) to private engine")
+                syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(correctedID)])
+            }
+        }
 
         for change in pendingChanges {
             switch change {
@@ -315,51 +467,66 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                     continue
                 }
+
+                // Determine the target zone ID for this record.
+                // For the shared engine, use the zone from the pending record ID (set by pushChange routing).
+                // For the private engine, use our own zone.
+                let targetZoneID = isShared ? recordID.zoneID : zoneID
+
                 if let item = try? bgContext.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
-                    guard !isFromSharedZone(item.ckRecordData) else {
-                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    let fromShared = isFromSharedZone(item.ckRecordData)
+                    guard fromShared == isShared else {
+                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: item.ckRecordData)
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: item, zoneID: zoneID))
+                    recordsToSave.append(RecordConversion.record(from: item, zoneID: targetZoneID))
                 } else if let override_ = try? bgContext.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
-                    guard !isFromSharedZone(override_.ckRecordData) else {
-                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    let fromShared = isFromSharedZone(override_.ckRecordData)
+                        || isFromSharedZone(override_.budgetItem?.ckRecordData)
+                    guard fromShared == isShared else {
+                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: override_.ckRecordData, parentCKRecordData: override_.budgetItem?.ckRecordData)
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: override_, zoneID: zoneID))
+                    recordsToSave.append(RecordConversion.record(from: override_, zoneID: targetZoneID))
                 } else if let occurrence = try? bgContext.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
-                    guard !isFromSharedZone(occurrence.ckRecordData) else {
-                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    let fromShared = isFromSharedZone(occurrence.ckRecordData)
+                        || isFromSharedZone(occurrence.budgetItem?.ckRecordData)
+                    guard fromShared == isShared else {
+                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: occurrence.ckRecordData, parentCKRecordData: occurrence.budgetItem?.ckRecordData)
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: occurrence, zoneID: zoneID))
+                    recordsToSave.append(RecordConversion.record(from: occurrence, zoneID: targetZoneID))
                 } else if let member = try? bgContext.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
-                    guard !isFromSharedZone(member.ckRecordData) else {
-                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    let fromShared = isFromSharedZone(member.ckRecordData)
+                    guard fromShared == isShared else {
+                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: member.ckRecordData)
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: member, zoneID: zoneID))
+                    recordsToSave.append(RecordConversion.record(from: member, zoneID: targetZoneID))
                 } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
-                    guard !isFromSharedZone(section.ckRecordData) else {
-                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    let fromShared = isFromSharedZone(section.ckRecordData)
+                    guard fromShared == isShared else {
+                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: section.ckRecordData)
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: section, zoneID: zoneID))
+                    recordsToSave.append(RecordConversion.record(from: section, zoneID: targetZoneID))
                 } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
-                    guard !isFromSharedZone(adjustment.ckRecordData) else {
-                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    let fromShared = isFromSharedZone(adjustment.ckRecordData)
+                    guard fromShared == isShared else {
+                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: adjustment.ckRecordData)
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: adjustment, zoneID: zoneID))
+                    recordsToSave.append(RecordConversion.record(from: adjustment, zoneID: targetZoneID))
                 } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
-                    guard !isFromSharedZone(preferences.ckRecordData) else {
-                        engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    let fromShared = isFromSharedZone(preferences.ckRecordData)
+                    guard fromShared == isShared else {
+                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: preferences.ckRecordData)
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: preferences, zoneID: zoneID))
+                    recordsToSave.append(RecordConversion.record(from: preferences, zoneID: targetZoneID))
                 } else {
                     // Object deleted locally before send — remove from pending
-                    logger.info("Record \(recordID.recordName) not found locally, removing from pending")
+                    logger.info("[\(engineLabel)] Record \(recordID.recordName) not found locally, removing from pending")
                     engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 }
             case .deleteRecord(let recordID):
@@ -370,6 +537,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         }
 
         guard !recordsToSave.isEmpty || !recordIDsToDelete.isEmpty else { return nil }
+        logger.info("[\(engineLabel)] Sending batch: \(recordsToSave.count) saves, \(recordIDsToDelete.count) deletes")
         return CKSyncEngine.RecordZoneChangeBatch(recordsToSave: recordsToSave, recordIDsToDelete: recordIDsToDelete, atomicByZone: false)
     }
 
@@ -867,12 +1035,15 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     // MARK: - Sent Record Zone Changes (success & error handling)
 
     @MainActor
-    private func handleSentRecordZoneChanges(_ changes: CKSyncEngine.Event.SentRecordZoneChanges) {
+    private func handleSentRecordZoneChanges(_ changes: CKSyncEngine.Event.SentRecordZoneChanges, fromSharedEngine: Bool = false) {
         guard let context = modelContainer?.mainContext else { return }
+        let engineLabel = fromSharedEngine ? "shared" : "private"
+        let targetEngine = fromSharedEngine ? sharedSyncEngine : syncEngine
 
         // Batch all updates into a single save to avoid per-record main-thread saves
         for savedRecord in changes.savedRecords {
             updateCKRecordData(from: savedRecord, in: context)
+            logger.info("[\(engineLabel)] Saved record \(savedRecord.recordID.recordName)")
         }
 
         // Handle failures
@@ -884,32 +1055,42 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             case .serverRecordChanged:
                 // Conflict — server has a newer version. Use server record as base and re-queue.
                 if let serverRecord = error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord {
-                    logger.info("Conflict for \(recordID.recordName) — merging with server record")
+                    logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — merging with server record")
                     updateCKRecordData(from: serverRecord, in: context)
-                    syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 }
 
             case .zoneNotFound:
-                // Zone doesn't exist yet — save zone and re-queue the record
-                logger.info("Zone not found — creating zone and re-queuing \(recordID.recordName)")
-                syncEngine?.state.add(pendingDatabaseChanges: [
-                    .saveZone(CKRecordZone(zoneID: zoneID))
-                ])
-                syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                if fromSharedEngine {
+                    // Shared zone was revoked/deleted by the owner — drop the pending change
+                    // to avoid an infinite retry loop (participants can't create zones).
+                    logger.warning("[\(engineLabel)] Shared zone not found for \(recordID.recordName) — share may have been revoked. Dropping pending change.")
+                    targetEngine?.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    Task { @MainActor in
+                        syncStatus = .error("Shared zone unavailable")
+                    }
+                } else {
+                    // Private zone doesn't exist yet — create it and re-queue the record
+                    logger.info("[\(engineLabel)] Zone not found — creating zone and re-queuing \(recordID.recordName)")
+                    syncEngine?.state.add(pendingDatabaseChanges: [
+                        .saveZone(CKRecordZone(zoneID: zoneID))
+                    ])
+                    targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                }
 
             case .unknownItem:
                 // Record doesn't exist on server — clear lastKnownRecord and retry
-                logger.info("Unknown item \(recordID.recordName) — clearing cached record and retrying")
+                logger.info("[\(engineLabel)] Unknown item \(recordID.recordName) — clearing cached record and retrying")
                 clearCKRecordData(for: recordID, in: context)
-                syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
 
             case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
                  .requestRateLimited, .operationCancelled:
                 // Transient errors — engine retries automatically
-                logger.info("Transient error for \(recordID.recordName): \(error.localizedDescription)")
+                logger.info("[\(engineLabel)] Transient error for \(recordID.recordName): \(error.localizedDescription)")
 
             default:
-                logger.error("Failed to save record \(recordID.recordName): \(error.localizedDescription)")
+                logger.error("[\(engineLabel)] Failed to save record \(recordID.recordName): \(error.localizedDescription)")
             }
         }
 

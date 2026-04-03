@@ -50,9 +50,7 @@ struct SettingsView: View {
 
                 Section("Sync") {
                     SyncStatusRow()
-                    Button("Force Push All Data") {
-                        SyncCoordinator.shared.pushAllLocalData()
-                    }
+                    SyncActionsRow()
                 }
 
                 DataManagementSection()
@@ -150,6 +148,48 @@ private struct SyncStatusRow: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+private struct SyncActionsRow: View {
+    @State private var syncResult: String?
+    @State private var isSyncing = false
+
+    var body: some View {
+        Button {
+            guard !isSyncing else { return }
+            isSyncing = true
+            syncResult = nil
+            Task {
+                let count = SyncCoordinator.shared.pushAllLocalData()
+                await MainActor.run {
+                    syncResult = "Queued \(count) record\(count == 1 ? "" : "s")"
+                }
+                try? await Task.sleep(for: .seconds(3))
+                await MainActor.run {
+                    withAnimation {
+                        syncResult = nil
+                        isSyncing = false
+                    }
+                }
+            }
+        } label: {
+            HStack {
+                Label("Sync Now", systemImage: "arrow.triangle.2.circlepath")
+                Spacer()
+                if isSyncing {
+                    if let result = syncResult {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundStyle(ScribeTheme.secondaryText)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+            }
+        }
+        .disabled(isSyncing)
     }
 }
 
