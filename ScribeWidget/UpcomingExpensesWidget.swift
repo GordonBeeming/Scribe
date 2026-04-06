@@ -114,6 +114,15 @@ struct UpcomingExpensesProvider: AppIntentTimelineProvider {
             let predicate = #Predicate<BudgetItem> { $0.isActive }
             let budgetItems = try context.fetch(FetchDescriptor<BudgetItem>(predicate: predicate))
 
+            // Fetch confirmed/skipped occurrences so we can exclude them
+            let confirmedRaw = OccurrenceStatus.confirmed.rawValue
+            let skippedRaw = OccurrenceStatus.skipped.rawValue
+            let completedPredicate = #Predicate<Occurrence> {
+                $0.statusRaw == confirmedRaw || $0.statusRaw == skippedRaw
+            }
+            let completedOccurrences = try context.fetch(FetchDescriptor<Occurrence>(predicate: completedPredicate))
+            let completedIDs = Set(completedOccurrences.map(\.id))
+
             var widgetItems: [WidgetExpenseItem] = []
             var totalIncome: Decimal = 0
             var totalExpenses: Decimal = 0
@@ -125,6 +134,10 @@ struct UpcomingExpensesProvider: AppIntentTimelineProvider {
             for item in budgetItems {
                 let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)
                 for date in dates {
+                    // Skip items that have been confirmed or skipped
+                    let occurrenceID = Occurrence.deterministicID(budgetItemID: item.id, dueDate: date)
+                    guard !completedIDs.contains(occurrenceID) else { continue }
+
                     // Apply pay day adjustments (weekday shifts only, no async holiday lookup in widget)
                     let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: [])
                     guard displayDate >= today && displayDate <= endDate else { continue }

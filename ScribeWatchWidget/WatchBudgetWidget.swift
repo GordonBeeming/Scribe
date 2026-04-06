@@ -87,6 +87,15 @@ struct WatchBudgetProvider: TimelineProvider {
             let predicate = #Predicate<BudgetItem> { $0.isActive }
             let items = try context.fetch(FetchDescriptor<BudgetItem>(predicate: predicate))
 
+            // Fetch confirmed/skipped occurrences so we can exclude them
+            let confirmedRaw = OccurrenceStatus.confirmed.rawValue
+            let skippedRaw = OccurrenceStatus.skipped.rawValue
+            let completedPredicate = #Predicate<Occurrence> {
+                $0.statusRaw == confirmedRaw || $0.statusRaw == skippedRaw
+            }
+            let completedOccurrences = try context.fetch(FetchDescriptor<Occurrence>(predicate: completedPredicate))
+            let completedIDs = Set(completedOccurrences.map(\.id))
+
             var totalIncome: Decimal = 0
             var totalExpenses: Decimal = 0
             var itemCount = 0
@@ -102,6 +111,10 @@ struct WatchBudgetProvider: TimelineProvider {
             for item in items {
                 let dates = DateCalculator.occurrenceDates(for: item, in: today...endDate)
                 for date in dates {
+                    // Skip items that have been confirmed or skipped
+                    let occurrenceID = Occurrence.deterministicID(budgetItemID: item.id, dueDate: date)
+                    guard !completedIDs.contains(occurrenceID) else { continue }
+
                     let amount = item.effectiveAmount(on: date)
                     itemCount += 1
                     if item.type == .income {
