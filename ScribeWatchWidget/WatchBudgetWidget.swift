@@ -34,6 +34,13 @@ struct WatchBudgetEntry: TimelineEntry {
 
 // MARK: - Provider
 
+/// Lookup key for matching a completed occurrence to a generated date. Mirrors the
+/// scheduled-or-display-date matching used by `OccurrenceMatching.findOccurrence`.
+private struct CompletionKey: Hashable {
+    let itemID: UUID
+    let day: Date
+}
+
 struct WatchBudgetProvider: TimelineProvider {
     private static let appGroupID = "group.com.gordonbeeming.scribe"
 
@@ -87,6 +94,28 @@ struct WatchBudgetProvider: TimelineProvider {
             let predicate = #Predicate<BudgetItem> { $0.isActive }
             let items = try context.fetch(FetchDescriptor<BudgetItem>(predicate: predicate))
 
+            // Fetch confirmed/skipped occurrences within the widget timeline window (with buffer
+            // for pay-day adjustments that may shift stored dueDate outside the display range).
+            let confirmedRaw = OccurrenceStatus.confirmed.rawValue
+            let skippedRaw = OccurrenceStatus.skipped.rawValue
+            let completedFetchStart = calendar.date(byAdding: .day, value: -14, to: today) ?? today
+            let completedFetchEnd = calendar.date(byAdding: .day, value: 14, to: endDate) ?? endDate
+            let completedPredicate = #Predicate<Occurrence> {
+                ($0.statusRaw == confirmedRaw || $0.statusRaw == skippedRaw) &&
+                $0.dueDate >= completedFetchStart &&
+                $0.dueDate <= completedFetchEnd
+            }
+            let completedOccurrences = try context.fetch(FetchDescriptor<Occurrence>(predicate: completedPredicate))
+
+            // Build a lookup keyed by (budgetItemID, day). Mirrors OccurrenceMatching.findOccurrence
+            // which matches by either scheduled date or display date, since occurrences may be
+            // stored with whichever date the confirming view used.
+            var completedKeys = Set<CompletionKey>()
+            for occurrence in completedOccurrences {
+                guard let itemID = occurrence.budgetItem?.id else { continue }
+                completedKeys.insert(CompletionKey(itemID: itemID, day: calendar.startOfDay(for: occurrence.dueDate)))
+            }
+
             var totalIncome: Decimal = 0
             var totalExpenses: Decimal = 0
             var itemCount = 0
@@ -102,6 +131,16 @@ struct WatchBudgetProvider: TimelineProvider {
             for item in items {
                 let dates = DateCalculator.occurrenceDates(for: item, in: today...endDate)
                 for date in dates {
+                    // Skip items that have been confirmed or skipped, whether the stored occurrence
+                    // was keyed by the scheduled date or the adjusted/display date.
+                    let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: [])
+                    let scheduledDay = calendar.startOfDay(for: date)
+                    let displayDay = calendar.startOfDay(for: displayDate)
+                    if completedKeys.contains(CompletionKey(itemID: item.id, day: scheduledDay)) ||
+                       completedKeys.contains(CompletionKey(itemID: item.id, day: displayDay)) {
+                        continue
+                    }
+
                     let amount = item.effectiveAmount(on: date)
                     itemCount += 1
                     if item.type == .income {
