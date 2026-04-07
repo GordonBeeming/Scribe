@@ -251,7 +251,7 @@ struct PeriodView: View {
         }
     }
 
-    private func scheduleNextIrregular(_ item: PeriodViewModel.DayItem, nextDate: Date) {
+    private func scheduleNextIrregular(_ item: PeriodViewModel.DayItem, nextDate: Date?) {
         let id = OccurrenceMatching.confirm(
             budgetItem: item.budgetItem,
             dueDate: irregularConfirmDate,
@@ -260,7 +260,12 @@ struct PeriodView: View {
             in: modelContext
         )
         SyncCoordinator.shared.pushChange(for: id)
-        item.budgetItem.referenceDate = nextDate
+        if let nextDate {
+            item.budgetItem.referenceDate = nextDate
+        } else {
+            // One-time payment — prevent any future occurrences by ending the item at this due date.
+            item.budgetItem.endDate = irregularConfirmDate
+        }
         item.budgetItem.modifiedAt = Date()
         try? modelContext.save()
         SyncCoordinator.shared.pushChange(for: item.budgetItem.id)
