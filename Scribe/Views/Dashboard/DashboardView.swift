@@ -152,7 +152,7 @@ struct DashboardView: View {
         }
     }
 
-    private func scheduleNextIrregular(_ item: DashboardViewModel.UpcomingItem, nextDate: Date) {
+    private func scheduleNextIrregular(_ item: DashboardViewModel.UpcomingItem, nextDate: Date?) {
         let id = OccurrenceMatching.confirm(
             budgetItem: item.budgetItem,
             dueDate: item.dueDate,
@@ -162,7 +162,12 @@ struct DashboardView: View {
         )
         SyncCoordinator.shared.pushChange(for: id)
 
-        item.budgetItem.referenceDate = nextDate
+        if let nextDate {
+            item.budgetItem.referenceDate = nextDate
+        } else {
+            // One-time payment — prevent any future occurrences by ending the item at this due date.
+            item.budgetItem.endDate = item.dueDate
+        }
         item.budgetItem.modifiedAt = Date()
         try? modelContext.save()
         SyncCoordinator.shared.pushChange(for: item.budgetItem.id)
