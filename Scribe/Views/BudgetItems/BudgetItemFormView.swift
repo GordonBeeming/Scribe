@@ -186,19 +186,66 @@ struct BudgetItemFormView: View {
 
     private func save() {
         let itemToSync: BudgetItem
+        var extraOverrideIDsToSync: [UUID] = []
         switch mode {
         case .create:
             let item = viewModel.createItem()
             viewModel.applyFamilyMembers(to: item, allMembers: familyMembers)
             modelContext.insert(item)
+            // Seed amount history with a baseline override at the item's
+            // creation date so the full timeline is preserved going forward.
+            let baseline = AmountOverride(
+                effectiveDate: item.createdAt,
+                amount: item.amount,
+                notes: nil,
+                budgetItem: item
+            )
+            modelContext.insert(baseline)
+            extraOverrideIDsToSync.append(baseline.id)
             itemToSync = item
         case .edit(let item):
+            // If the user changed the amount in the edit form, record it as
+            // an override effective today rather than silently overwriting
+            // `item.amount` (which the refresher would later replace with the
+            // most recent override anyway).
+            let previousAmount = item.amount
+            let newAmount = viewModel.amount
             viewModel.applyToItem(item)
             viewModel.applyFamilyMembers(to: item, allMembers: familyMembers)
+            if newAmount != previousAmount {
+                let calendar = Calendar.current
+                let today = calendar.startOfDay(for: Date())
+                let existingTodayOverride = item.amountOverrides.first { existing in
+                    calendar.isDate(existing.effectiveDate, inSameDayAs: today)
+                        && existing.overrideDayOfMonth == nil
+                        && existing.overrideReferenceDate == nil
+                }
+                if let existingTodayOverride {
+                    existingTodayOverride.amount = newAmount
+                    existingTodayOverride.modifiedAt = Date()
+                    extraOverrideIDsToSync.append(existingTodayOverride.id)
+                } else {
+                    let edit = AmountOverride(
+                        effectiveDate: today,
+                        amount: newAmount,
+                        notes: nil,
+                        budgetItem: item
+                    )
+                    modelContext.insert(edit)
+                    extraOverrideIDsToSync.append(edit.id)
+                }
+            }
             itemToSync = item
         }
-        try? modelContext.save()
-        SyncCoordinator.shared.pushChange(for: itemToSync.id)
+        do {
+            try modelContext.save()
+            SyncCoordinator.shared.pushChange(for: itemToSync.id)
+            for overrideID in extraOverrideIDsToSync {
+                SyncCoordinator.shared.pushChange(for: overrideID)
+            }
+        } catch {
+            print("BudgetItemFormView.save: failed to persist item: \(error)")
+        }
     }
 }
 
