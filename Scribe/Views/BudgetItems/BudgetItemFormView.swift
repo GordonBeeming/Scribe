@@ -186,11 +186,22 @@ struct BudgetItemFormView: View {
 
     private func save() {
         let itemToSync: BudgetItem
+        var baselineOverrideID: UUID?
         switch mode {
         case .create:
             let item = viewModel.createItem()
             viewModel.applyFamilyMembers(to: item, allMembers: familyMembers)
             modelContext.insert(item)
+            // Seed amount history with a baseline override at the item's
+            // creation date so the full timeline is preserved going forward.
+            let baseline = AmountOverride(
+                effectiveDate: item.createdAt,
+                amount: item.amount,
+                notes: nil,
+                budgetItem: item
+            )
+            modelContext.insert(baseline)
+            baselineOverrideID = baseline.id
             itemToSync = item
         case .edit(let item):
             viewModel.applyToItem(item)
@@ -199,6 +210,9 @@ struct BudgetItemFormView: View {
         }
         try? modelContext.save()
         SyncCoordinator.shared.pushChange(for: itemToSync.id)
+        if let baselineOverrideID {
+            SyncCoordinator.shared.pushChange(for: baselineOverrideID)
+        }
     }
 }
 

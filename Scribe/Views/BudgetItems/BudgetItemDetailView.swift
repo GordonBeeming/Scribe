@@ -188,6 +188,10 @@ private struct AddOverrideSheet: View {
                             modelContext.insert(override_)
                             try? modelContext.save()
                             SyncCoordinator.shared.pushChange(for: override_.id)
+                            if BudgetItemAmountRefresher.refresh(item) {
+                                try? modelContext.save()
+                                SyncCoordinator.shared.pushChange(for: item.id)
+                            }
                             dismiss()
                         }
                     }
@@ -195,8 +199,8 @@ private struct AddOverrideSheet: View {
                 }
             }
             .onAppear {
-                amount = "\(item.amount)"
-                newDayOfMonth = item.dayOfMonth ?? 1
+                amount = "\(item.effectiveAmount(on: Date()))"
+                newDayOfMonth = item.effectiveDayOfMonth(on: Date()) ?? 1
             }
         }
     }
