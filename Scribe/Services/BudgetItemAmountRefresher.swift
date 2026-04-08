@@ -11,7 +11,9 @@ import SwiftData
 enum BudgetItemAmountRefresher {
 
     /// Refresh every `BudgetItem` in the given context. Returns the IDs of items
-    /// whose `amount` actually changed so the caller can push sync updates.
+    /// whose `amount` actually changed AND were successfully persisted, so the
+    /// caller can push sync updates only for records that actually made it to
+    /// disk.
     @discardableResult
     static func refreshAll(in context: ModelContext, on date: Date = Date()) -> [UUID] {
         let descriptor = FetchDescriptor<BudgetItem>()
@@ -24,10 +26,14 @@ enum BudgetItemAmountRefresher {
             }
         }
 
-        if !changedIDs.isEmpty {
-            try? context.save()
+        guard !changedIDs.isEmpty else { return [] }
+        do {
+            try context.save()
+            return changedIDs
+        } catch {
+            print("BudgetItemAmountRefresher.refreshAll: save failed: \(error)")
+            return []
         }
-        return changedIDs
     }
 
     /// Refresh a single item. Returns `true` if `item.amount` changed.
@@ -60,22 +66,10 @@ enum BudgetItemAmountRefresher {
             }
             if hasBaseline { continue }
 
-            // Use the earliest known amount as the baseline. If there are no
-            // overrides at all, that's just the item's current amount. If there
-            // are later overrides, the baseline is whatever the item's amount
-            // was before any of them — which is `item.amount` until the first
-            // override's effectiveDate has passed.
-            let baselineAmount: Decimal
-            if let earliest = item.amountOverrides.sorted(by: { $0.effectiveDate < $1.effectiveDate }).first,
-               calendar.startOfDay(for: earliest.effectiveDate) <= calendar.startOfDay(for: Date()) {
-                // The earliest override has already taken effect, so the
-                // current `item.amount` may have already moved on. We can't
-                // recover the original from data, so use the current amount as
-                // the best available baseline.
-                baselineAmount = item.amount
-            } else {
-                baselineAmount = item.amount
-            }
+            // We can't reliably reconstruct the original pre-override amount
+            // from current data, so use the item's current amount as the best
+            // available baseline for the backfilled override.
+            let baselineAmount = item.amount
 
             let baseline = AmountOverride(
                 effectiveDate: item.createdAt,
@@ -87,11 +81,14 @@ enum BudgetItemAmountRefresher {
             inserted.append(baseline.id)
         }
 
-        if !inserted.isEmpty {
-            try? context.save()
+        guard !inserted.isEmpty else { return }
+        do {
+            try context.save()
             for id in inserted {
                 SyncCoordinator.shared.pushChange(for: id)
             }
+        } catch {
+            print("BudgetItemAmountRefresher.backfillBaselineOverrides: save failed: \(error)")
         }
     }
 }

@@ -186,11 +186,19 @@ private struct AddOverrideSheet: View {
                                 budgetItem: item
                             )
                             modelContext.insert(override_)
-                            try? modelContext.save()
-                            SyncCoordinator.shared.pushChange(for: override_.id)
-                            if BudgetItemAmountRefresher.refresh(item) {
-                                try? modelContext.save()
-                                SyncCoordinator.shared.pushChange(for: item.id)
+                            do {
+                                try modelContext.save()
+                                SyncCoordinator.shared.pushChange(for: override_.id)
+                                if BudgetItemAmountRefresher.refresh(item) {
+                                    do {
+                                        try modelContext.save()
+                                        SyncCoordinator.shared.pushChange(for: item.id)
+                                    } catch {
+                                        print("AddOverrideSheet: failed to save refreshed item amount: \(error)")
+                                    }
+                                }
+                            } catch {
+                                print("AddOverrideSheet: failed to save new amount override: \(error)")
                             }
                             dismiss()
                         }
