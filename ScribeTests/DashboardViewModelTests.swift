@@ -61,6 +61,55 @@ struct DashboardViewModelTests {
         #expect(summary.totalExpenses >= 0)
     }
 
+    @Test("Weekly group totals convert items from their currency into the base currency")
+    func weeklyGroupsMixedCurrencyTotals() {
+        // USD → AUD ~1.516 at rates below ($12.20 USD ≈ $17.37 AUD)
+        let usdExpense = BudgetItem(
+            name: "USD sub", type: .expense, amount: 12.20,
+            currencyCode: "USD",
+            frequency: .weekly,
+            referenceDate: makeDate(year: 2026, month: 3, day: 9),
+            category: .other
+        )
+        let audExpense = BudgetItem(
+            name: "AUD item", type: .expense, amount: 10,
+            currencyCode: "AUD",
+            frequency: .weekly,
+            referenceDate: makeDate(year: 2026, month: 3, day: 9),
+            category: .other
+        )
+
+        // Rates are expressed relative to USD (matches ExchangeRateService.fetchAllRates).
+        let rates: [String: Double] = ["AUD": 1.516, "USD": 1.0]
+
+        let converted = viewModel.weeklyGroups(
+            budgetItems: [usdExpense, audExpense],
+            occurrences: [],
+            quickAdjustments: [],
+            anchor: .fixedDay(weekday: 2),
+            range: .days14,
+            holidays: [],
+            exchangeRates: rates,
+            baseCurrency: "AUD"
+        )
+        let naive = viewModel.weeklyGroups(
+            budgetItems: [usdExpense, audExpense],
+            occurrences: [],
+            quickAdjustments: [],
+            anchor: .fixedDay(weekday: 2),
+            range: .days14,
+            holidays: []
+        )
+
+        let convertedTotal = converted.reduce(Decimal.zero) { $0 + $1.totalExpenses }
+        let naiveTotal = naive.reduce(Decimal.zero) { $0 + $1.totalExpenses }
+
+        // Naive path sums raw amounts regardless of currency (the old bug).
+        #expect(convertedTotal > naiveTotal)
+        // Converted total should be close to (12.20 * 1.516) + 10 ≈ 28.49 per week; at least strictly greater than raw sum (22.20).
+        #expect(convertedTotal > Decimal(22))
+    }
+
     @Test("Weekly groups compute correct totals per group")
     func weeklyGroupsTotals() {
         let income = BudgetItem(

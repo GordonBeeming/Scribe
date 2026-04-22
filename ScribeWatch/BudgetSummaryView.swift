@@ -25,6 +25,7 @@ struct BudgetSummaryView: View {
         }
         .task {
             await loadHolidays()
+            await ExchangeRateCache.shared.load()
         }
     }
 
@@ -37,7 +38,9 @@ struct BudgetSummaryView: View {
             quickAdjustments: quickAdjustments,
             anchor: section.anchor,
             range: SettingsViewModel.currentDefaultRange(),
-            holidays: holidays
+            holidays: holidays,
+            exchangeRates: ExchangeRateCache.shared.rates,
+            baseCurrency: ExchangeRateCache.shared.baseCurrency
         )
 
         return List {

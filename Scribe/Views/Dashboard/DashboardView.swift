@@ -64,7 +64,9 @@ struct DashboardView: View {
                                             budgetItems: activeItems,
                                             occurrences: occurrences,
                                             anchor: section.anchor,
-                                            holidays: holidays
+                                            holidays: holidays,
+                                            exchangeRates: ExchangeRateCache.shared.rates,
+                                            baseCurrency: ExchangeRateCache.shared.baseCurrency
                                         )
                                     )
                                 case .detailedWeekly:
@@ -74,7 +76,9 @@ struct DashboardView: View {
                                         quickAdjustments: quickAdjustments,
                                         anchor: section.anchor,
                                         range: SettingsViewModel.currentDefaultRange(),
-                                        holidays: holidays
+                                        holidays: holidays,
+                                        exchangeRates: ExchangeRateCache.shared.rates,
+                                        baseCurrency: ExchangeRateCache.shared.baseCurrency
                                     )
                                     VStack(spacing: 12) {
                                         Text(section.label)
