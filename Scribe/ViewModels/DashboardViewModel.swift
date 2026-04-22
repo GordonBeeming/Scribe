@@ -105,13 +105,9 @@ final class DashboardViewModel {
         let hasBalanceReset: Bool
         let confirmedCount: Int
         let totalCount: Int
+        /// Total amount of pending (unconfirmed, not skipped) expenses still to come, in base currency.
+        let pendingExpenses: Decimal
         var delta: Decimal { totalIncome - totalExpenses + adjustmentIncome - adjustmentExpenses }
-
-        /// Total amount of pending (unconfirmed, not skipped) expenses still to come
-        var pendingExpenses: Decimal {
-            items.filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
-                .reduce(Decimal.zero) { $0 + $1.amount }
-        }
     }
 
     struct MonthlySummary: Identifiable {
@@ -257,6 +253,10 @@ final class DashboardViewModel {
             let weekNet = totalIncome - totalExpenses + adjIncome - adjExpenses
             let closingBalance = carryOver + weekNet
 
+            let pendingExpenses = pg.items
+                .filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
+                .reduce(Decimal.zero) { $0 + toBase($1.amount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
+
             let label = "\(formatter.string(from: pg.start)) – \(formatter.string(from: pg.end))"
 
             groups.append(WeekGroup(
@@ -273,7 +273,8 @@ final class DashboardViewModel {
                 closingBalance: closingBalance,
                 hasBalanceReset: hasReset,
                 confirmedCount: pg.items.filter(\.isConfirmed).count,
-                totalCount: pg.items.count
+                totalCount: pg.items.count,
+                pendingExpenses: pendingExpenses
             ))
 
             runningBalance = closingBalance
