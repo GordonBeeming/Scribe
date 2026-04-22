@@ -61,6 +61,69 @@ struct DashboardViewModelTests {
         #expect(summary.totalExpenses >= 0)
     }
 
+    @Test("Weekly group totals convert items from their currency into the base currency")
+    func weeklyGroupsMixedCurrencyTotals() {
+        // USD → AUD ~1.516 at rates below ($12.20 USD ≈ $18.50 AUD)
+        let usdExpense = BudgetItem(
+            name: "USD sub", type: .expense, amount: 12.20,
+            currencyCode: "USD",
+            frequency: .weekly,
+            referenceDate: makeDate(year: 2026, month: 3, day: 9),
+            category: .other
+        )
+        let audExpense = BudgetItem(
+            name: "AUD item", type: .expense, amount: 10,
+            currencyCode: "AUD",
+            frequency: .weekly,
+            referenceDate: makeDate(year: 2026, month: 3, day: 9),
+            category: .other
+        )
+
+        // Rates are expressed relative to USD (matches ExchangeRateService.fetchAllRates).
+        let rates: [String: Double] = ["AUD": 1.516, "USD": 1.0]
+
+        let converted = viewModel.weeklyGroups(
+            budgetItems: [usdExpense, audExpense],
+            occurrences: [],
+            quickAdjustments: [],
+            anchor: .fixedDay(weekday: 2),
+            range: .days14,
+            holidays: [],
+            exchangeRates: rates,
+            baseCurrency: "AUD"
+        )
+        let naive = viewModel.weeklyGroups(
+            budgetItems: [usdExpense, audExpense],
+            occurrences: [],
+            quickAdjustments: [],
+            anchor: .fixedDay(weekday: 2),
+            range: .days14,
+            holidays: []
+        )
+
+        // Find a populated week in both runs so we can compare a specific group
+        // rather than a sum that could hide rounding regressions.
+        let weeksWithItems = converted.filter { !$0.items.isEmpty }
+        #expect(!weeksWithItems.isEmpty)
+        guard let convertedWeek = weeksWithItems.first,
+              let naiveWeek = naive.first(where: { $0.startDate == convertedWeek.startDate })
+        else {
+            Issue.record("Expected a populated week in both converted and naive runs")
+            return
+        }
+
+        // Expected per-week expense total in AUD: (12.20 * 1.516) rounded to 2dp + 10 = 18.50 + 10 = 28.50.
+        // Give ourselves a small tolerance to absorb Double↔Decimal rounding inside convertToBase.
+        let expected = Decimal(string: "28.50")!
+        let tolerance = Decimal(string: "0.05")!
+        let diff = abs(convertedWeek.totalExpenses - expected)
+        #expect(diff <= tolerance, "converted week totalExpenses \(convertedWeek.totalExpenses) differs from expected \(expected) by more than \(tolerance)")
+
+        // Naive path (no rates) should still treat raw amounts as base → ~$22.20 for the same week.
+        #expect(naiveWeek.totalExpenses == Decimal(string: "22.20")!)
+        #expect(convertedWeek.totalExpenses > naiveWeek.totalExpenses)
+    }
+
     @Test("Weekly groups compute correct totals per group")
     func weeklyGroupsTotals() {
         let income = BudgetItem(

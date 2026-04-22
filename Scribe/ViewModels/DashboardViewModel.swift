@@ -105,13 +105,9 @@ final class DashboardViewModel {
         let hasBalanceReset: Bool
         let confirmedCount: Int
         let totalCount: Int
+        /// Total amount of pending (unconfirmed, not skipped) expenses still to come, in base currency.
+        let pendingExpenses: Decimal
         var delta: Decimal { totalIncome - totalExpenses + adjustmentIncome - adjustmentExpenses }
-
-        /// Total amount of pending (unconfirmed, not skipped) expenses still to come
-        var pendingExpenses: Decimal {
-            items.filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
-                .reduce(Decimal.zero) { $0 + $1.amount }
-        }
     }
 
     struct MonthlySummary: Identifiable {
@@ -128,7 +124,9 @@ final class DashboardViewModel {
         quickAdjustments: [QuickAdjustment],
         anchor: DashboardSectionAnchor,
         range: DefaultRange,
-        holidays: Set<Date>
+        holidays: Set<Date>,
+        exchangeRates: [String: Double] = [:],
+        baseCurrency: String = "AUD"
     ) -> [WeekGroup] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
@@ -222,9 +220,9 @@ final class DashboardViewModel {
         // Compute running balance across weeks
         var runningBalance: Decimal = 0
 
-        // If there's a balance reset, start from that amount
+        // If there's a balance reset, start from that amount (converted to base currency)
         if let reset = lastReset {
-            runningBalance = reset.amount
+            runningBalance = toBase(reset.amount, from: reset.currencyCode, rates: exchangeRates, base: baseCurrency)
         }
 
         let formatter = DateFormatter()
@@ -232,10 +230,14 @@ final class DashboardViewModel {
 
         var groups: [WeekGroup] = []
         for pg in preliminaryGroups {
-            let totalIncome = pg.items.filter { $0.budgetItem.type == .income }.reduce(Decimal.zero) { $0 + $1.effectiveBalanceAmount }
-            let totalExpenses = pg.items.filter { $0.budgetItem.type == .expense }.reduce(Decimal.zero) { $0 + $1.effectiveBalanceAmount }
-            let adjIncome = pg.adjustments.filter { $0.adjustmentType == .income }.reduce(Decimal.zero) { $0 + $1.amount }
-            let adjExpenses = pg.adjustments.filter { $0.adjustmentType == .expense }.reduce(Decimal.zero) { $0 + $1.amount }
+            let totalIncome = pg.items.filter { $0.budgetItem.type == .income }
+                .reduce(Decimal.zero) { $0 + toBase($1.effectiveBalanceAmount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
+            let totalExpenses = pg.items.filter { $0.budgetItem.type == .expense }
+                .reduce(Decimal.zero) { $0 + toBase($1.effectiveBalanceAmount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
+            let adjIncome = pg.adjustments.filter { $0.adjustmentType == .income }
+                .reduce(Decimal.zero) { $0 + toBase($1.amount, from: $1.currencyCode, rates: exchangeRates, base: baseCurrency) }
+            let adjExpenses = pg.adjustments.filter { $0.adjustmentType == .expense }
+                .reduce(Decimal.zero) { $0 + toBase($1.amount, from: $1.currencyCode, rates: exchangeRates, base: baseCurrency) }
 
             // Check for balance resets within this week
             let weekResets = allResets.filter { reset in
@@ -244,12 +246,16 @@ final class DashboardViewModel {
             }
             let hasReset = !weekResets.isEmpty
             if let latestWeekReset = weekResets.last {
-                runningBalance = latestWeekReset.amount
+                runningBalance = toBase(latestWeekReset.amount, from: latestWeekReset.currencyCode, rates: exchangeRates, base: baseCurrency)
             }
 
             let carryOver = runningBalance
             let weekNet = totalIncome - totalExpenses + adjIncome - adjExpenses
             let closingBalance = carryOver + weekNet
+
+            let pendingExpenses = pg.items
+                .filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
+                .reduce(Decimal.zero) { $0 + toBase($1.amount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
 
             let label = "\(formatter.string(from: pg.start)) – \(formatter.string(from: pg.end))"
 
@@ -267,7 +273,8 @@ final class DashboardViewModel {
                 closingBalance: closingBalance,
                 hasBalanceReset: hasReset,
                 confirmedCount: pg.items.filter(\.isConfirmed).count,
-                totalCount: pg.items.count
+                totalCount: pg.items.count,
+                pendingExpenses: pendingExpenses
             ))
 
             runningBalance = closingBalance
@@ -280,7 +287,9 @@ final class DashboardViewModel {
         budgetItems: [BudgetItem],
         occurrences: [Occurrence],
         anchor: DashboardSectionAnchor,
-        holidays: Set<Date>
+        holidays: Set<Date>,
+        exchangeRates: [String: Double] = [:],
+        baseCurrency: String = "AUD"
     ) -> MonthlySummary {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
@@ -341,7 +350,8 @@ final class DashboardViewModel {
                 if let itemEndDate = item.endDate, date > calendar.startOfDay(for: itemEndDate) { continue }
                 let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
                 guard displayDate >= monthStart && displayDate <= monthEnd else { continue }
-                let amount = item.effectiveAmount(on: date)
+                let rawAmount = item.effectiveAmount(on: date)
+                let amount = toBase(rawAmount, from: item.currencyCode, rates: exchangeRates, base: baseCurrency)
                 if item.type == .income {
                     totalIncome += amount
                 } else {
@@ -360,5 +370,11 @@ final class DashboardViewModel {
             totalIncome: totalIncome,
             totalExpenses: totalExpenses
         )
+    }
+
+    /// Convert `amount` from `code` into `base`, falling back to raw `amount` when rates aren't loaded or the currency is unknown.
+    /// Callers that don't provide rates (e.g. tests, pre-load states) keep the original pass-through behavior.
+    private func toBase(_ amount: Decimal, from code: String, rates: [String: Double], base: String) -> Decimal {
+        ExchangeRateCache.convertToBase(amount, from: code, rates: rates, baseCurrency: base) ?? amount
     }
 }

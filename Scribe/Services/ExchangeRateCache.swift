@@ -15,8 +15,20 @@ final class ExchangeRateCache {
     /// Convert amount from a source currency to base currency synchronously.
     /// Returns nil if rates aren't loaded or currency not found.
     func convertToBase(_ amount: Decimal, from currencyCode: String) -> Decimal? {
-        guard currencyCode != baseCurrency else { return nil } // same currency, no conversion needed
         guard isLoaded else { return nil }
+        return Self.convertToBase(amount, from: currencyCode, rates: rates, baseCurrency: baseCurrency)
+    }
+
+    /// Pure, actor-free conversion used by aggregators that can't reach the main-actor-isolated cache.
+    /// `rates` empty → treated as "not loaded" and returns nil so callers can fall back to raw amounts.
+    nonisolated static func convertToBase(
+        _ amount: Decimal,
+        from currencyCode: String,
+        rates: [String: Double],
+        baseCurrency: String
+    ) -> Decimal? {
+        guard currencyCode != baseCurrency else { return nil } // same currency, no conversion needed
+        guard !rates.isEmpty else { return nil }
 
         let sourceRate: Double
         if currencyCode == "USD" {
