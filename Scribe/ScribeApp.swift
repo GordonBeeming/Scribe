@@ -20,6 +20,7 @@ struct ScribeApp: App {
                         // Ensure UserPreferences model exists (migrates from UserDefaults)
                         let vm = SettingsViewModel(modelContext: SharedModelContainer.shared.mainContext)
                         vm.ensurePreferencesExist()
+                        vm.ensureDefaultDashboardSectionsExist()
                         // Backfill baseline overrides for items created before
                         // amount history was tracked from day one, then bring
                         // every item's headline amount up to date.

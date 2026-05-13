@@ -146,6 +146,44 @@ final class SettingsViewModel {
         let _ = getOrCreatePreferences(in: modelContext)
     }
 
+    private static let didSeedDefaultsKey = "didSeedDefaultDashboardSections"
+
+    /// Seed the two default dashboard sections (Summary / Upcoming) for new users.
+    /// Runs at most once per device — guarded by an app-group UserDefaults flag so
+    /// intentional deletions don't get silently resurrected on next launch.
+    func ensureDefaultDashboardSectionsExist() {
+        guard let modelContext else { return }
+        let defaults = Self.defaults
+        if defaults?.bool(forKey: Self.didSeedDefaultsKey) == true { return }
+
+        let existing = (try? modelContext.fetch(FetchDescriptor<DashboardSection>())) ?? []
+        if !existing.isEmpty {
+            defaults?.set(true, forKey: Self.didSeedDefaultsKey)
+            return
+        }
+
+        let summary = DashboardSection(
+            id: DashboardSection.defaultSummaryID,
+            sectionType: .monthlySummary,
+            anchor: .fixedDayOfMonth(day: 1),
+            sortOrder: 0,
+            label: "Summary"
+        )
+        let upcoming = DashboardSection(
+            id: DashboardSection.defaultUpcomingID,
+            sectionType: .detailedWeekly,
+            anchor: .fixedDay(weekday: 2),
+            sortOrder: 1,
+            label: "Upcoming"
+        )
+        modelContext.insert(summary)
+        modelContext.insert(upcoming)
+        try? modelContext.save()
+        SyncCoordinator.shared.pushChange(for: summary.id)
+        SyncCoordinator.shared.pushChange(for: upcoming.id)
+        defaults?.set(true, forKey: Self.didSeedDefaultsKey)
+    }
+
     static func currentDefaultRange() -> DefaultRange {
         let raw = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.string(forKey: "defaultRange") ?? DefaultRange.days14.rawValue
         return DefaultRange(rawValue: raw) ?? .days14
