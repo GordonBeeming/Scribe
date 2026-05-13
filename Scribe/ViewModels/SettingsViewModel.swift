@@ -1,5 +1,8 @@
 import Foundation
 import SwiftData
+import os
+
+private let settingsLogger = Logger(subsystem: "com.gordonbeeming.scribe", category: "SettingsViewModel")
 
 enum DefaultRange: String, CaseIterable, Identifiable {
     case days7 = "7days"
@@ -156,7 +159,16 @@ final class SettingsViewModel {
         let defaults = Self.defaults
         if defaults?.bool(forKey: Self.didSeedDefaultsKey) == true { return }
 
-        let existing = (try? modelContext.fetch(FetchDescriptor<DashboardSection>())) ?? []
+        let existing: [DashboardSection]
+        do {
+            existing = try modelContext.fetch(FetchDescriptor<DashboardSection>())
+        } catch {
+            // A transient fetch failure (store contention, migration window) must NOT
+            // be treated as "no sections" — that would seed duplicates next to the
+            // user's real data. Skip this launch and leave the flag unset so we retry.
+            settingsLogger.error("Skipping default-section seed: fetch failed (\(error.localizedDescription))")
+            return
+        }
         if !existing.isEmpty {
             defaults?.set(true, forKey: Self.didSeedDefaultsKey)
             return
@@ -178,7 +190,14 @@ final class SettingsViewModel {
         )
         modelContext.insert(summary)
         modelContext.insert(upcoming)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            // Save failed — don't flip the seed flag, otherwise the user is locked
+            // out of defaults forever. Retry on the next launch.
+            settingsLogger.error("Failed to save default sections: \(error.localizedDescription)")
+            return
+        }
         SyncCoordinator.shared.pushChange(for: summary.id)
         SyncCoordinator.shared.pushChange(for: upcoming.id)
         defaults?.set(true, forKey: Self.didSeedDefaultsKey)
