@@ -45,6 +45,11 @@ final class DashboardSection {
     var createdAt: Date
     var modifiedAt: Date
 
+    /// Well-known UUIDs for the default sections seeded on first launch.
+    /// Deterministic IDs mean a multi-device race produces the same CKRecord name and CloudKit converges.
+    static let defaultSummaryID  = UUID(uuidString: "00000000-0000-0000-0000-000000000020")!
+    static let defaultUpcomingID = UUID(uuidString: "00000000-0000-0000-0000-000000000021")!
+
     var sectionType: DashboardSectionType {
         get { DashboardSectionType(rawValue: sectionTypeRaw) ?? .detailedWeekly }
         set { sectionTypeRaw = newValue.rawValue }
@@ -67,13 +72,14 @@ final class DashboardSection {
     }
 
     init(
+        id: UUID = UUID(),
         sectionType: DashboardSectionType,
         anchor: DashboardSectionAnchor,
         isEnabled: Bool = true,
         sortOrder: Int = 0,
         label: String
     ) {
-        self.id = UUID()
+        self.id = id
         self.sectionTypeRaw = sectionType.rawValue
         if let data = try? JSONEncoder().encode(anchor),
            let string = String(data: data, encoding: .utf8) {
