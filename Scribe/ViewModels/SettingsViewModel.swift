@@ -65,7 +65,7 @@ enum LookbackDays: Int, CaseIterable, Identifiable {
 
 @Observable
 final class SettingsViewModel {
-    nonisolated(unsafe) private static let defaults = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")
+    nonisolated(unsafe) private static let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
 
     private var modelContext: ModelContext?
 
@@ -217,7 +217,7 @@ final class SettingsViewModel {
     }
 
     static func currentDefaultRange() -> DefaultRange {
-        let raw = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.string(forKey: "defaultRange") ?? DefaultRange.days14.rawValue
+        let raw = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.string(forKey: "defaultRange") ?? DefaultRange.days14.rawValue
         return DefaultRange(rawValue: raw) ?? .days14
     }
 
@@ -226,9 +226,9 @@ final class SettingsViewModel {
     }
 
     static func currentLookbackDays() -> Int {
-        let raw = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.integer(forKey: "lookbackDays")
+        let raw = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.integer(forKey: "lookbackDays")
         // UserDefaults returns 0 for missing keys, so check if key exists
-        if UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.object(forKey: "lookbackDays") == nil {
+        if UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.object(forKey: "lookbackDays") == nil {
             return 5
         }
         return raw ?? 5

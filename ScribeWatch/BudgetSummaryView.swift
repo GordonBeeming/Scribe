@@ -90,7 +90,7 @@ struct BudgetSummaryView: View {
                 Spacer()
 
                 VStack(alignment: .trailing) {
-                    Text(group.rollingNet != nil ? "Net*" : "Net")
+                    Text(group.rollingNet != nil ? "Rolling" : "Net")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                     let net = group.rollingNet ?? group.delta
