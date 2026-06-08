@@ -23,7 +23,6 @@ struct DashboardViewModelTests {
         let groups = viewModel.weeklyGroups(
             budgetItems: [item],
             occurrences: [],
-            quickAdjustments: [],
             anchor: .fixedDay(weekday: 2), // Monday
             range: .days28,
             holidays: []
@@ -85,7 +84,6 @@ struct DashboardViewModelTests {
         let converted = viewModel.weeklyGroups(
             budgetItems: [usdExpense, audExpense],
             occurrences: [],
-            quickAdjustments: [],
             anchor: .fixedDay(weekday: 2),
             range: .days14,
             holidays: [],
@@ -95,7 +93,6 @@ struct DashboardViewModelTests {
         let naive = viewModel.weeklyGroups(
             budgetItems: [usdExpense, audExpense],
             occurrences: [],
-            quickAdjustments: [],
             anchor: .fixedDay(weekday: 2),
             range: .days14,
             holidays: []
@@ -142,7 +139,6 @@ struct DashboardViewModelTests {
         let groups = viewModel.weeklyGroups(
             budgetItems: [income, expense],
             occurrences: [],
-            quickAdjustments: [],
             anchor: .fixedDay(weekday: 2),
             range: .days14,
             holidays: []
@@ -150,7 +146,70 @@ struct DashboardViewModelTests {
 
         for group in groups where !group.items.isEmpty {
             #expect(group.totalIncome > 0 || group.totalExpenses > 0)
-            #expect(group.delta == group.totalIncome - group.totalExpenses + group.adjustmentIncome - group.adjustmentExpenses)
+            #expect(group.delta == group.totalIncome - group.totalExpenses)
+        }
+    }
+
+    @Test("Rolling net is nil when the setting is off")
+    func rollingWeeklyNetOff() {
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 5000,
+            frequency: .monthly, dayOfMonth: 14,
+            category: .income
+        )
+        let expense = BudgetItem(
+            name: "Groceries", type: .expense, amount: 200,
+            frequency: .weekly,
+            referenceDate: makeDate(year: 2026, month: 3, day: 9),
+            category: .other
+        )
+
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [income, expense],
+            occurrences: [],
+            anchor: .fixedDay(weekday: 2),
+            range: .days28,
+            holidays: [],
+            rollingNet: false
+        )
+
+        for group in groups {
+            #expect(group.rollingNet == nil)
+        }
+    }
+
+    @Test("Rolling net carries each week's leftover forward")
+    func rollingWeeklyNetCarriesForward() {
+        // Weekly income only → every week's delta is positive and equal, so the rolling
+        // net must equal the cumulative sum of deltas (proving the carry-forward).
+        let income = BudgetItem(
+            name: "Weekly Pay", type: .income, amount: 1000,
+            frequency: .weekly,
+            referenceDate: makeDate(year: 2026, month: 3, day: 9),
+            category: .income
+        )
+
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [income],
+            occurrences: [],
+            anchor: .fixedDay(weekday: 2),
+            range: .days28,
+            holidays: [],
+            rollingNet: true
+        )
+
+        #expect(groups.count >= 3)
+
+        var cumulative: Decimal = 0
+        for group in groups {
+            cumulative += group.delta
+            #expect(group.rollingNet == cumulative)
+        }
+
+        // The last week's rolling net must exceed the first — it has burnt nothing down,
+        // only accumulated, so it strictly grows with each positive-net week.
+        if let first = groups.first, let last = groups.last, groups.count > 1 {
+            #expect((last.rollingNet ?? 0) > (first.rollingNet ?? 0))
         }
     }
 
@@ -267,7 +326,6 @@ struct DashboardViewModelTests {
         let groups = viewModel.weeklyGroups(
             budgetItems: [expense],
             occurrences: [skippedOccurrence],
-            quickAdjustments: [],
             anchor: .fixedDay(weekday: calendar.component(.weekday, from: today)),
             range: .days7,
             holidays: []

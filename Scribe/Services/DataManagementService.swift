@@ -56,13 +56,6 @@ enum DataManagementService {
             for s in sections { context.delete(s) }
         }
 
-        if let adjustments = try? context.fetch(FetchDescriptor<QuickAdjustment>()) {
-            deletionIDs.append(contentsOf: adjustments.map {
-                CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
-            })
-            for a in adjustments { context.delete(a) }
-        }
-
         if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>()) {
             deletionIDs.append(contentsOf: preferences.map {
                 CKRecord.ID(recordName: $0.id.uuidString, zoneID: zoneID)
@@ -85,7 +78,6 @@ enum DataManagementService {
         let occurrences = (try? context.fetch(FetchDescriptor<Occurrence>())) ?? []
         let members = (try? context.fetch(FetchDescriptor<FamilyMember>())) ?? []
         let sections = (try? context.fetch(FetchDescriptor<DashboardSection>())) ?? []
-        let adjustments = (try? context.fetch(FetchDescriptor<QuickAdjustment>())) ?? []
         let preferences = (try? context.fetch(FetchDescriptor<UserPreferences>()))?.first
 
         let export = ScribeExport(
@@ -96,7 +88,6 @@ enum DataManagementService {
             amountOverrides: overrides.map { CodableAmountOverride(from: $0) },
             occurrences: occurrences.map { CodableOccurrence(from: $0) },
             dashboardSections: sections.map { CodableDashboardSection(from: $0) },
-            quickAdjustments: adjustments.map { CodableQuickAdjustment(from: $0) },
             userPreferences: preferences.map { CodableUserPreferences(from: $0) }
         )
 
@@ -225,27 +216,6 @@ enum DataManagementService {
             }
         }
 
-        // Insert quick adjustments
-        if let codableAdjustments = export.quickAdjustments {
-            for codableAdjustment in codableAdjustments {
-                if mode == .merge, let existing = existingQuickAdjustment(id: codableAdjustment.id, in: context) {
-                    if codableAdjustment.modifiedAt > existing.modifiedAt {
-                        existing.adjustmentTypeRaw = codableAdjustment.adjustmentTypeRaw
-                        existing.date = codableAdjustment.date
-                        existing.amount = codableAdjustment.amount
-                        existing.name = codableAdjustment.name
-                        existing.currencyCode = codableAdjustment.currencyCode
-                        existing.notes = codableAdjustment.notes
-                        existing.modifiedAt = codableAdjustment.modifiedAt
-                    }
-                } else {
-                    let adjustment = codableAdjustment.toModel()
-                    context.insert(adjustment)
-                }
-                recordIDs.append(CKRecord.ID(recordName: codableAdjustment.id.uuidString, zoneID: zoneID))
-            }
-        }
-
         // Import user preferences
         if let codablePrefs = export.userPreferences {
             let sharedID = UserPreferences.sharedID
@@ -255,6 +225,7 @@ enum DataManagementService {
                     existing.defaultRangeRaw = codablePrefs.defaultRangeRaw
                     existing.lookbackDays = codablePrefs.lookbackDays
                     existing.defaultCurrency = codablePrefs.defaultCurrency
+                    existing.rollingWeeklyNet = codablePrefs.rollingWeeklyNet ?? existing.rollingWeeklyNet
                     existing.modifiedAt = codablePrefs.modifiedAt
                     existing.syncToUserDefaults()
                 }
@@ -293,10 +264,6 @@ enum DataManagementService {
 
     private static func existingDashboardSection(id: UUID, in context: ModelContext) -> DashboardSection? {
         try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == id })).first
-    }
-
-    private static func existingQuickAdjustment(id: UUID, in context: ModelContext) -> QuickAdjustment? {
-        try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == id })).first
     }
 
     private static func updateBudgetItem(_ item: BudgetItem, from codable: CodableBudgetItem) {

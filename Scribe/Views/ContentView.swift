@@ -11,14 +11,6 @@ struct ContentView: View {
                 BudgetItemListView()
             }
 
-            Tab("Quick Add", systemImage: "bolt.fill") {
-                QuickAddView()
-            }
-
-            Tab("Period", systemImage: "calendar") {
-                PeriodView()
-            }
-
             Tab("Settings", systemImage: "gearshape") {
                 SettingsView()
             }
@@ -34,6 +26,5 @@ struct ContentView: View {
             Occurrence.self,
             FamilyMember.self,
             DashboardSection.self,
-            QuickAdjustment.self,
         ], inMemory: true)
 }

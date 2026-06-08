@@ -9,7 +9,6 @@ struct ScribeExport: Codable {
     let amountOverrides: [CodableAmountOverride]
     let occurrences: [CodableOccurrence]
     let dashboardSections: [CodableDashboardSection]?
-    let quickAdjustments: [CodableQuickAdjustment]?
     let userPreferences: CodableUserPreferences?
 }
 
@@ -234,51 +233,13 @@ struct CodableDashboardSection: Codable {
     }
 }
 
-struct CodableQuickAdjustment: Codable {
-    let id: UUID
-    let adjustmentTypeRaw: String
-    let date: Date
-    let amount: Decimal
-    let name: String
-    let currencyCode: String
-    let notes: String?
-    let createdAt: Date
-    let modifiedAt: Date
-
-    init(from adjustment: QuickAdjustment) {
-        self.id = adjustment.id
-        self.adjustmentTypeRaw = adjustment.adjustmentTypeRaw
-        self.date = adjustment.date
-        self.amount = adjustment.amount
-        self.name = adjustment.name
-        self.currencyCode = adjustment.currencyCode
-        self.notes = adjustment.notes
-        self.createdAt = adjustment.createdAt
-        self.modifiedAt = adjustment.modifiedAt
-    }
-
-    @MainActor
-    func toModel() -> QuickAdjustment {
-        let adjustment = QuickAdjustment(
-            type: QuickAdjustmentType(rawValue: adjustmentTypeRaw) ?? .expense,
-            date: date,
-            amount: amount,
-            name: name,
-            currencyCode: currencyCode,
-            notes: notes
-        )
-        adjustment.id = id
-        adjustment.createdAt = createdAt
-        adjustment.modifiedAt = modifiedAt
-        return adjustment
-    }
-}
-
 struct CodableUserPreferences: Codable {
     let id: UUID
     let defaultRangeRaw: String
     let lookbackDays: Int
     let defaultCurrency: String
+    // Optional so exports written before this field existed still decode.
+    let rollingWeeklyNet: Bool?
     let createdAt: Date
     let modifiedAt: Date
 
@@ -287,6 +248,7 @@ struct CodableUserPreferences: Codable {
         self.defaultRangeRaw = preferences.defaultRangeRaw
         self.lookbackDays = preferences.lookbackDays
         self.defaultCurrency = preferences.defaultCurrency
+        self.rollingWeeklyNet = preferences.rollingWeeklyNet
         self.createdAt = preferences.createdAt
         self.modifiedAt = preferences.modifiedAt
     }
@@ -296,7 +258,8 @@ struct CodableUserPreferences: Codable {
         let preferences = UserPreferences(
             defaultRangeRaw: defaultRangeRaw,
             lookbackDays: lookbackDays,
-            defaultCurrency: defaultCurrency
+            defaultCurrency: defaultCurrency,
+            rollingWeeklyNet: rollingWeeklyNet ?? false
         )
         preferences.id = id
         preferences.createdAt = createdAt

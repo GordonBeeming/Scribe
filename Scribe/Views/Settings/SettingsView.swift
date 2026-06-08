@@ -34,6 +34,11 @@ struct SettingsView: View {
                     NavigationLink("Dashboard Sections") {
                         DashboardSectionsView()
                     }
+
+                    Toggle("Roll net across weeks", isOn: $viewModel.rollingWeeklyNet)
+                    Text("Carry each week's leftover into the next, so monthly income spreads across the weeks instead of spiking in one.")
+                        .font(.caption)
+                        .foregroundStyle(ScribeTheme.secondaryText)
                 }
 
                 Section("Family Members") {

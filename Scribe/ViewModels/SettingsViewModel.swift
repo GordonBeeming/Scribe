@@ -115,6 +115,19 @@ final class SettingsViewModel {
         }
     }
 
+    var rollingWeeklyNet: Bool {
+        get {
+            access(keyPath: \.rollingWeeklyNet)
+            return Self.defaults?.bool(forKey: "rollingWeeklyNet") ?? false
+        }
+        set {
+            withMutation(keyPath: \.rollingWeeklyNet) {
+                Self.defaults?.set(newValue, forKey: "rollingWeeklyNet")
+                updatePreferences { $0.rollingWeeklyNet = newValue }
+            }
+        }
+    }
+
     /// Read/create the shared UserPreferences and apply a mutation, then push to CloudKit.
     private func updatePreferences(_ mutation: (UserPreferences) -> Void) {
         guard let modelContext else { return }
@@ -206,6 +219,10 @@ final class SettingsViewModel {
     static func currentDefaultRange() -> DefaultRange {
         let raw = UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.string(forKey: "defaultRange") ?? DefaultRange.days14.rawValue
         return DefaultRange(rawValue: raw) ?? .days14
+    }
+
+    static func currentRollingWeeklyNet() -> Bool {
+        UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.bool(forKey: "rollingWeeklyNet") ?? false
     }
 
     static func currentLookbackDays() -> Int {

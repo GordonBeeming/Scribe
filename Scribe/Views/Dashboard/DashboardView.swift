@@ -10,7 +10,6 @@ struct DashboardView: View {
     @Query private var allItems: [BudgetItem]
     @Query private var occurrences: [Occurrence]
     @Query(sort: \DashboardSection.sortOrder) private var dashboardSections: [DashboardSection]
-    @Query(sort: \QuickAdjustment.date) private var quickAdjustments: [QuickAdjustment]
 
     @State private var viewModel = DashboardViewModel()
     @State private var selectedItem: BudgetItem?
@@ -73,12 +72,12 @@ struct DashboardView: View {
                                     let groups = viewModel.weeklyGroups(
                                         budgetItems: activeItems,
                                         occurrences: occurrences,
-                                        quickAdjustments: quickAdjustments,
                                         anchor: section.anchor,
                                         range: SettingsViewModel.currentDefaultRange(),
                                         holidays: holidays,
                                         exchangeRates: ExchangeRateCache.shared.rates,
-                                        baseCurrency: ExchangeRateCache.shared.baseCurrency
+                                        baseCurrency: ExchangeRateCache.shared.baseCurrency,
+                                        rollingNet: SettingsViewModel.currentRollingWeeklyNet()
                                     )
                                     VStack(spacing: 12) {
                                         Text(section.label)
@@ -265,6 +264,5 @@ struct DashboardView: View {
             Occurrence.self,
             FamilyMember.self,
             DashboardSection.self,
-            QuickAdjustment.self,
         ], inMemory: true)
 }

@@ -13,7 +13,6 @@ enum SharedModelContainer {
         Occurrence.self,
         FamilyMember.self,
         DashboardSection.self,
-        QuickAdjustment.self,
         UserPreferences.self,
     ])
 

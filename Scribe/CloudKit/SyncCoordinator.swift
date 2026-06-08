@@ -96,13 +96,6 @@ final class SyncCoordinator: @unchecked Sendable {
             }
             return nil
         }
-        // Check QuickAdjustment
-        if let adjustment = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == id })).first {
-            if let z = zoneIDFromRecordData(adjustment.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
-                return z
-            }
-            return nil
-        }
         // Check UserPreferences
         if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == id })).first {
             if let z = zoneIDFromRecordData(preferences.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
@@ -326,9 +319,6 @@ final class SyncCoordinator: @unchecked Sendable {
         if let sections = try? bgContext.fetch(FetchDescriptor<DashboardSection>()) {
             for section in sections { classify(id: section.id, ckRecordData: section.ckRecordData) }
         }
-        if let adjustments = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>()) {
-            for adjustment in adjustments { classify(id: adjustment.id, ckRecordData: adjustment.ckRecordData) }
-        }
         if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>()) {
             for pref in preferences { classify(id: pref.id, ckRecordData: pref.ckRecordData) }
         }
@@ -510,13 +500,6 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                         continue
                     }
                     recordsToSave.append(RecordConversion.record(from: section, zoneID: targetZoneID))
-                } else if let adjustment = try? bgContext.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
-                    let fromShared = isFromSharedZone(adjustment.ckRecordData)
-                    guard fromShared == isShared else {
-                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: adjustment.ckRecordData)
-                        continue
-                    }
-                    recordsToSave.append(RecordConversion.record(from: adjustment, zoneID: targetZoneID))
                 } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
                     let fromShared = isFromSharedZone(preferences.ckRecordData)
                     guard fromShared == isShared else {
@@ -611,7 +594,6 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             RecordConversion.budgetItemRecordType,
             RecordConversion.familyMemberRecordType,
             RecordConversion.dashboardSectionRecordType,
-            RecordConversion.quickAdjustmentRecordType,
             RecordConversion.userPreferencesRecordType
         ]
         let sortedModifications = changes.modifications.sorted { a, b in
@@ -870,30 +852,6 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 context.insert(section)
             }
 
-        case RecordConversion.quickAdjustmentRecordType:
-            let predicate = #Predicate<QuickAdjustment> { $0.id == uuid }
-            if let existing = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: predicate)).first {
-                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
-                if remoteModified >= existing.modifiedAt {
-                    RecordConversion.applyRecord(record, to: existing)
-                }
-                existing.ckRecordData = ckData
-            } else {
-                let adjustment = QuickAdjustment(
-                    type: QuickAdjustmentType(rawValue: record["adjustmentTypeRaw"] as? String ?? "expense") ?? .expense,
-                    date: record["date"] as? Date ?? Date(),
-                    amount: (record["amount"] as? NSNumber)?.decimalValue ?? 0,
-                    name: record["name"] as? String ?? "Unknown",
-                    currencyCode: record["currencyCode"] as? String ?? "AUD",
-                    notes: record["notes"] as? String
-                )
-                adjustment.id = uuid
-                adjustment.createdAt = record["createdAt"] as? Date ?? Date()
-                adjustment.modifiedAt = record["modifiedAt"] as? Date ?? Date()
-                adjustment.ckRecordData = ckData
-                context.insert(adjustment)
-            }
-
         case RecordConversion.userPreferencesRecordType:
             let predicate = #Predicate<UserPreferences> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: predicate)).first {
@@ -906,7 +864,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 let preferences = UserPreferences(
                     defaultRangeRaw: record["defaultRangeRaw"] as? String ?? "14days",
                     lookbackDays: record["lookbackDays"] as? Int ?? 5,
-                    defaultCurrency: record["defaultCurrency"] as? String ?? "AUD"
+                    defaultCurrency: record["defaultCurrency"] as? String ?? "AUD",
+                    rollingWeeklyNet: (record["rollingWeeklyNet"] as? Int ?? 0) == 1
                 )
                 preferences.id = uuid
                 preferences.createdAt = record["createdAt"] as? Date ?? Date()
@@ -949,11 +908,6 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.dashboardSectionRecordType:
             let predicate = #Predicate<DashboardSection> { $0.id == uuid }
             if let item = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: predicate)).first {
-                context.delete(item)
-            }
-        case RecordConversion.quickAdjustmentRecordType:
-            let predicate = #Predicate<QuickAdjustment> { $0.id == uuid }
-            if let item = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: predicate)).first {
                 context.delete(item)
             }
         case RecordConversion.userPreferencesRecordType:
@@ -1119,8 +1073,6 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             member.ckRecordData = ckData
         } else if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
             section.ckRecordData = ckData
-        } else if let adjustment = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
-            adjustment.ckRecordData = ckData
         } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
             preferences.ckRecordData = ckData
         }
@@ -1141,8 +1093,6 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             member.ckRecordData = nil
         } else if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
             section.ckRecordData = nil
-        } else if let adjustment = try? context.fetch(FetchDescriptor<QuickAdjustment>(predicate: #Predicate { $0.id == uuid })).first {
-            adjustment.ckRecordData = nil
         } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
             preferences.ckRecordData = nil
         }
