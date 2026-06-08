@@ -306,7 +306,7 @@ enum RecordConversion {
         record["defaultRangeRaw"] = preferences.defaultRangeRaw as CKRecordValue
         record["lookbackDays"] = preferences.lookbackDays as CKRecordValue
         record["defaultCurrency"] = preferences.defaultCurrency as CKRecordValue
-        record["rollingWeeklyNet"] = (preferences.rollingWeeklyNet ? 1 : 0) as CKRecordValue
+        record["rollingWeeklyNet"] = ((preferences.rollingWeeklyNet ?? false) ? 1 : 0) as CKRecordValue
         record["createdAt"] = preferences.createdAt as CKRecordValue
         record["modifiedAt"] = preferences.modifiedAt as CKRecordValue
         return record

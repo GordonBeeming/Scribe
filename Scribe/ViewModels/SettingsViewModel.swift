@@ -222,7 +222,7 @@ final class SettingsViewModel {
     }
 
     static func currentRollingWeeklyNet() -> Bool {
-        UserDefaults(suiteName: "group.com.gordonbeeming.scribe")?.bool(forKey: "rollingWeeklyNet") ?? false
+        UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.bool(forKey: "rollingWeeklyNet") ?? false
     }
 
     static func currentLookbackDays() -> Int {
