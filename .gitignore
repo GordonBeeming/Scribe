@@ -27,3 +27,6 @@ Pods/
 
 # XcodeGen generated project (can be regenerated from project.yml)
 Scribe.xcodeproj/
+
+# XcodeBuildMCP local session defaults (machine-specific absolute paths)
+.xcodebuildmcp/

@@ -8,7 +8,6 @@ enum RecordConversion {
     static let occurrenceRecordType = "Occurrence"
     static let familyMemberRecordType = "FamilyMember"
     static let dashboardSectionRecordType = "DashboardSection"
-    static let quickAdjustmentRecordType = "QuickAdjustment"
     static let userPreferencesRecordType = "UserPreferences"
 
     // MARK: - CKRecord System Fields
@@ -295,43 +294,6 @@ enum RecordConversion {
         section.ckRecordData = encodeSystemFields(of: record)
     }
 
-    // MARK: - QuickAdjustment -> CKRecord
-
-    static func record(from adjustment: QuickAdjustment, zoneID: CKRecordZone.ID) -> CKRecord {
-        let record = recordForModel(
-            recordType: quickAdjustmentRecordType,
-            id: adjustment.id,
-            ckRecordData: adjustment.ckRecordData,
-            zoneID: zoneID
-        )
-        record["adjustmentTypeRaw"] = adjustment.adjustmentTypeRaw as CKRecordValue
-        record["date"] = adjustment.date as CKRecordValue
-        record["amount"] = NSDecimalNumber(decimal: adjustment.amount) as CKRecordValue
-        record["name"] = adjustment.name as CKRecordValue
-        record["currencyCode"] = adjustment.currencyCode as CKRecordValue
-        if let notes = adjustment.notes {
-            record["notes"] = notes as CKRecordValue
-        } else {
-            record["notes"] = nil
-        }
-        record["createdAt"] = adjustment.createdAt as CKRecordValue
-        record["modifiedAt"] = adjustment.modifiedAt as CKRecordValue
-        return record
-    }
-
-    static func applyRecord(_ record: CKRecord, to adjustment: QuickAdjustment) {
-        adjustment.adjustmentTypeRaw = record["adjustmentTypeRaw"] as? String ?? adjustment.adjustmentTypeRaw
-        adjustment.date = record["date"] as? Date ?? adjustment.date
-        if let amount = record["amount"] as? NSNumber {
-            adjustment.amount = amount.decimalValue
-        }
-        adjustment.name = record["name"] as? String ?? adjustment.name
-        adjustment.currencyCode = record["currencyCode"] as? String ?? adjustment.currencyCode
-        adjustment.notes = record["notes"] as? String
-        adjustment.modifiedAt = record["modifiedAt"] as? Date ?? Date()
-        adjustment.ckRecordData = encodeSystemFields(of: record)
-    }
-
     // MARK: - UserPreferences -> CKRecord
 
     static func record(from preferences: UserPreferences, zoneID: CKRecordZone.ID) -> CKRecord {
@@ -344,6 +306,7 @@ enum RecordConversion {
         record["defaultRangeRaw"] = preferences.defaultRangeRaw as CKRecordValue
         record["lookbackDays"] = preferences.lookbackDays as CKRecordValue
         record["defaultCurrency"] = preferences.defaultCurrency as CKRecordValue
+        record["rollingWeeklyNet"] = ((preferences.rollingWeeklyNet ?? false) ? 1 : 0) as CKRecordValue
         record["createdAt"] = preferences.createdAt as CKRecordValue
         record["modifiedAt"] = preferences.modifiedAt as CKRecordValue
         return record
@@ -353,6 +316,10 @@ enum RecordConversion {
         preferences.defaultRangeRaw = record["defaultRangeRaw"] as? String ?? preferences.defaultRangeRaw
         preferences.lookbackDays = record["lookbackDays"] as? Int ?? preferences.lookbackDays
         preferences.defaultCurrency = record["defaultCurrency"] as? String ?? preferences.defaultCurrency
+        // Stored as Int (1/0); absent on records written before this field existed → keep current value.
+        if let rolling = record["rollingWeeklyNet"] as? Int {
+            preferences.rollingWeeklyNet = rolling == 1
+        }
         preferences.modifiedAt = record["modifiedAt"] as? Date ?? Date()
         preferences.ckRecordData = encodeSystemFields(of: record)
         preferences.syncToUserDefaults()

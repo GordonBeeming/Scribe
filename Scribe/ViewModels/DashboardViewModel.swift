@@ -95,19 +95,17 @@ final class DashboardViewModel {
         let startDate: Date
         let endDate: Date
         let items: [UpcomingItem]
-        let adjustments: [QuickAdjustment]
         let totalIncome: Decimal
         let totalExpenses: Decimal
-        let adjustmentIncome: Decimal
-        let adjustmentExpenses: Decimal
-        let carryOver: Decimal
-        let closingBalance: Decimal
-        let hasBalanceReset: Bool
+        /// Cumulative net carried across weeks (this week's `delta` plus every prior week's),
+        /// seeded at 0 at the current week. Non-nil only when the rolling-net setting is on.
+        let rollingNet: Decimal?
         let confirmedCount: Int
         let totalCount: Int
         /// Total amount of pending (unconfirmed, not skipped) expenses still to come, in base currency.
         let pendingExpenses: Decimal
-        var delta: Decimal { totalIncome - totalExpenses + adjustmentIncome - adjustmentExpenses }
+        /// This week's standalone net (income − expenses).
+        var delta: Decimal { totalIncome - totalExpenses }
     }
 
     struct MonthlySummary: Identifiable {
@@ -121,12 +119,12 @@ final class DashboardViewModel {
     func weeklyGroups(
         budgetItems: [BudgetItem],
         occurrences: [Occurrence],
-        quickAdjustments: [QuickAdjustment],
         anchor: DashboardSectionAnchor,
         range: DefaultRange,
         holidays: Set<Date>,
         exchangeRates: [String: Double] = [:],
-        baseCurrency: String = "AUD"
+        baseCurrency: String = "AUD",
+        rollingNet: Bool = false
     ) -> [WeekGroup] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
@@ -161,14 +159,8 @@ final class DashboardViewModel {
         if diff < 0 { diff += 7 }
         weekStart = calendar.date(byAdding: .day, value: -diff, to: today) ?? today
 
-        // Find the most recent balance reset to determine starting point
-        let allResets = quickAdjustments
-            .filter { $0.adjustmentType == .balanceReset }
-            .sorted { $0.date < $1.date }
-        let lastReset = allResets.last
-
         // Generate week boundaries covering the range
-        var preliminaryGroups: [(start: Date, end: Date, items: [UpcomingItem], adjustments: [QuickAdjustment])] = []
+        var preliminaryGroups: [(start: Date, end: Date, items: [UpcomingItem])] = []
         var currentStart = weekStart
 
         while currentStart <= endDate {
@@ -204,26 +196,14 @@ final class DashboardViewModel {
 
             weekItems.sort { $0.dueDate < $1.dueDate }
 
-            // Collect quick adjustments for this week (non-reset)
-            let weekAdjustments = quickAdjustments.filter { adj in
-                adj.adjustmentType != .balanceReset &&
-                calendar.startOfDay(for: adj.date) >= currentStart &&
-                calendar.startOfDay(for: adj.date) <= currentEnd
-            }.sorted { $0.date < $1.date }
-
-            preliminaryGroups.append((start: currentStart, end: currentEnd, items: weekItems, adjustments: weekAdjustments))
+            preliminaryGroups.append((start: currentStart, end: currentEnd, items: weekItems))
 
             guard let nextStart = calendar.date(byAdding: .day, value: 7, to: currentStart) else { break }
             currentStart = nextStart
         }
 
-        // Compute running balance across weeks
-        var runningBalance: Decimal = 0
-
-        // If there's a balance reset, start from that amount (converted to base currency)
-        if let reset = lastReset {
-            runningBalance = toBase(reset.amount, from: reset.currencyCode, rates: exchangeRates, base: baseCurrency)
-        }
+        // Cumulative net carried across weeks (only surfaced when the rolling-net setting is on).
+        var cumulativeNet: Decimal = 0
 
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE d MMM"
@@ -234,24 +214,9 @@ final class DashboardViewModel {
                 .reduce(Decimal.zero) { $0 + toBase($1.effectiveBalanceAmount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
             let totalExpenses = pg.items.filter { $0.budgetItem.type == .expense }
                 .reduce(Decimal.zero) { $0 + toBase($1.effectiveBalanceAmount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
-            let adjIncome = pg.adjustments.filter { $0.adjustmentType == .income }
-                .reduce(Decimal.zero) { $0 + toBase($1.amount, from: $1.currencyCode, rates: exchangeRates, base: baseCurrency) }
-            let adjExpenses = pg.adjustments.filter { $0.adjustmentType == .expense }
-                .reduce(Decimal.zero) { $0 + toBase($1.amount, from: $1.currencyCode, rates: exchangeRates, base: baseCurrency) }
 
-            // Check for balance resets within this week
-            let weekResets = allResets.filter { reset in
-                calendar.startOfDay(for: reset.date) >= pg.start &&
-                calendar.startOfDay(for: reset.date) <= pg.end
-            }
-            let hasReset = !weekResets.isEmpty
-            if let latestWeekReset = weekResets.last {
-                runningBalance = toBase(latestWeekReset.amount, from: latestWeekReset.currencyCode, rates: exchangeRates, base: baseCurrency)
-            }
-
-            let carryOver = runningBalance
-            let weekNet = totalIncome - totalExpenses + adjIncome - adjExpenses
-            let closingBalance = carryOver + weekNet
+            let weekNet = totalIncome - totalExpenses
+            cumulativeNet += weekNet
 
             let pendingExpenses = pg.items
                 .filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
@@ -264,20 +229,13 @@ final class DashboardViewModel {
                 startDate: pg.start,
                 endDate: pg.end,
                 items: pg.items,
-                adjustments: pg.adjustments,
                 totalIncome: totalIncome,
                 totalExpenses: totalExpenses,
-                adjustmentIncome: adjIncome,
-                adjustmentExpenses: adjExpenses,
-                carryOver: carryOver,
-                closingBalance: closingBalance,
-                hasBalanceReset: hasReset,
+                rollingNet: rollingNet ? cumulativeNet : nil,
                 confirmedCount: pg.items.filter(\.isConfirmed).count,
                 totalCount: pg.items.count,
                 pendingExpenses: pendingExpenses
             ))
-
-            runningBalance = closingBalance
         }
 
         return groups

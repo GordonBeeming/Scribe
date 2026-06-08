@@ -7,7 +7,6 @@ struct BudgetSummaryView: View {
     private var budgetItems: [BudgetItem]
     @Query private var occurrences: [Occurrence]
     @Query(sort: \DashboardSection.sortOrder) private var dashboardSections: [DashboardSection]
-    @Query(sort: \QuickAdjustment.date) private var quickAdjustments: [QuickAdjustment]
 
     @State private var viewModel = DashboardViewModel()
     @State private var holidays: Set<Date> = []
@@ -35,12 +34,12 @@ struct BudgetSummaryView: View {
         let groups = viewModel.weeklyGroups(
             budgetItems: budgetItems,
             occurrences: occurrences,
-            quickAdjustments: quickAdjustments,
             anchor: section.anchor,
             range: SettingsViewModel.currentDefaultRange(),
             holidays: holidays,
             exchangeRates: ExchangeRateCache.shared.rates,
-            baseCurrency: ExchangeRateCache.shared.baseCurrency
+            baseCurrency: ExchangeRateCache.shared.baseCurrency,
+            rollingNet: SettingsViewModel.currentRollingWeeklyNet()
         )
 
         return List {
@@ -69,22 +68,35 @@ struct BudgetSummaryView: View {
 
             HStack {
                 VStack(alignment: .leading) {
-                    Text("Opening")
+                    Text("In")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
-                    Text(CurrencyFormatter.format(group.carryOver, currencyCode: "AUD", signStyle: .automatic))
+                    Text(CurrencyFormatter.format(group.totalIncome, currencyCode: "AUD", signStyle: .none))
                         .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.green)
+                }
+
+                Spacer()
+
+                VStack {
+                    Text("Out")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Text(CurrencyFormatter.format(group.totalExpenses, currencyCode: "AUD", signStyle: .none))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.red)
                 }
 
                 Spacer()
 
                 VStack(alignment: .trailing) {
-                    Text("Closing")
+                    Text(group.rollingNet != nil ? "Rolling" : "Net")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
-                    Text(CurrencyFormatter.format(group.closingBalance, currencyCode: "AUD", signStyle: .automatic))
+                    let net = group.rollingNet ?? group.delta
+                    Text(CurrencyFormatter.format(net, currencyCode: "AUD", signStyle: .automatic))
                         .font(.headline.monospacedDigit().bold())
-                        .foregroundStyle(group.closingBalance >= 0 ? .green : .red)
+                        .foregroundStyle(net >= 0 ? .green : .red)
                 }
             }
 
