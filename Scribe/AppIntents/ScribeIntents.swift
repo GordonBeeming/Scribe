@@ -76,12 +76,16 @@ struct MarkPaidIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let context = SharedModelContainer.shared.mainContext
-        let allItems = try context.fetch(FetchDescriptor<BudgetItem>())
-        guard let model = allItems.first(where: { $0.id == item.id }) else {
+        let itemID = item.id
+        var itemDescriptor = FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == itemID })
+        itemDescriptor.fetchLimit = 1
+        guard let model = try context.fetch(itemDescriptor).first else {
             return .result(dialog: "I couldn't find that item in Scribe.")
         }
 
-        let occurrences = try context.fetch(FetchDescriptor<Occurrence>())
+        let occurrences = try context.fetch(
+            FetchDescriptor<Occurrence>(predicate: #Predicate { $0.budgetItem?.id == itemID })
+        )
         let viewModel = DashboardViewModel()
         let upcoming = viewModel.upcomingItems(budgetItems: [model], occurrences: occurrences, lookbackDays: 7)
         guard let next = upcoming.first(where: { !$0.isConfirmed && !$0.isSkipped }) else {
@@ -121,15 +125,16 @@ struct BudgetSummaryIntent: AppIntent {
         let viewModel = DashboardViewModel()
         let summary = viewModel.periodSummary(budgetItems: items, occurrences: occurrences, start: today, end: end)
         let net = summary.income - summary.expenses
+        let currency = defaultCurrency(in: context)
 
-        let incomeText = CurrencyFormatter.format(summary.income, currencyCode: "AUD")
-        let expenseText = CurrencyFormatter.format(summary.expenses, currencyCode: "AUD")
-        let netText = CurrencyFormatter.format(net, currencyCode: "AUD", signStyle: .automatic)
+        let incomeText = CurrencyFormatter.format(summary.income, currencyCode: currency)
+        let expenseText = CurrencyFormatter.format(summary.expenses, currencyCode: currency)
+        let netText = CurrencyFormatter.format(net, currencyCode: currency, signStyle: .automatic)
         let dialog = "Over the next 14 days: \(incomeText) in, \(expenseText) out, net \(netText)."
 
         return .result(
             dialog: IntentDialog(stringLiteral: dialog),
-            view: BudgetSummarySnippet(income: summary.income, expenses: summary.expenses, net: net)
+            view: BudgetSummarySnippet(income: summary.income, expenses: summary.expenses, net: net, currencyCode: currency)
         )
     }
 }
@@ -167,7 +172,7 @@ struct UpcomingExpensesIntent: AppIntent {
         if dueExpenses.isEmpty {
             dialog = "You have nothing due soon in Scribe."
         } else {
-            let totalText = CurrencyFormatter.format(total, currencyCode: "AUD")
+            let totalText = CurrencyFormatter.format(total, currencyCode: defaultCurrency(in: context))
             dialog = "You have \(dueExpenses.count) expense\(dueExpenses.count == 1 ? "" : "s") due soon totalling \(totalText)."
         }
 
@@ -176,6 +181,15 @@ struct UpcomingExpensesIntent: AppIntent {
             view: UpcomingExpensesSnippet(rows: rows)
         )
     }
+}
+
+// MARK: - Helpers
+
+/// The user's configured base/display currency, falling back to AUD. Used so spoken
+/// summaries don't hardcode a currency for users whose default differs.
+@MainActor
+private func defaultCurrency(in context: ModelContext) -> String {
+    (try? context.fetch(FetchDescriptor<UserPreferences>()).first)?.defaultCurrency ?? "AUD"
 }
 
 // MARK: - Errors

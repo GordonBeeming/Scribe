@@ -6,13 +6,15 @@ import SwiftData
 @Suite("Sync Recovery Tests")
 struct SyncRecoveryTests {
 
-    /// The "Unstuck" action must null every cached change tag and drop both
-    /// persisted sync-state tokens, so the engines re-fetch and re-upload from a
-    /// clean slate. CKSyncEngine itself is skipped in the test environment, so this
-    /// exercises the local data-clearing contract of forceFullResync().
-    @Test("forceFullResync clears cached records and persisted sync state")
+    /// The "Unstuck" action must drop both persisted sync-state tokens (so the
+    /// engines re-fetch from scratch) while **preserving** each record's cached
+    /// ckRecordData — that data carries the zone identity needed to route shared
+    /// records back to the shared zone, so clearing it would duplicate shared data
+    /// into the private zone. CKSyncEngine is skipped in the test environment, so
+    /// this exercises the local state contract of forceFullResync().
+    @Test("forceFullResync drops sync-state tokens and preserves cached records")
     @MainActor
-    func forceFullResyncClearsState() throws {
+    func forceFullResyncDropsTokens() throws {
         // Match the app: SwiftData's automatic CloudKit is disabled (sync is via
         // CKSyncEngine), otherwise the schema fails CloudKit's optional-attribute check.
         let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
@@ -27,7 +29,8 @@ struct SyncRecoveryTests {
             name: "Rent", type: .expense, amount: 100,
             frequency: .monthly, dayOfMonth: 1, category: .housing
         )
-        item.ckRecordData = Data([1, 2, 3])
+        let cachedRecord = Data([1, 2, 3])
+        item.ckRecordData = cachedRecord
         context.insert(item)
         try context.save()
 
@@ -38,8 +41,10 @@ struct SyncRecoveryTests {
         SyncCoordinator.shared.start(with: container)
         SyncCoordinator.shared.forceFullResync()
 
-        #expect(item.ckRecordData == nil)
+        // Tokens dropped so the engines re-fetch from scratch...
         #expect(defaults?.object(forKey: "syncEngineState") == nil)
         #expect(defaults?.object(forKey: "sharedSyncEngineState") == nil)
+        // ...but the cached record (and its zone identity) is preserved.
+        #expect(item.ckRecordData == cachedRecord)
     }
 }

@@ -5,6 +5,7 @@ struct BudgetSummarySnippet: View {
     let income: Decimal
     let expenses: Decimal
     let net: Decimal
+    var currencyCode: String = "AUD"
 
     var body: some View {
         VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
@@ -12,16 +13,16 @@ struct BudgetSummarySnippet: View {
                 .font(.headline)
             HStack(spacing: ScribeDesign.Spacing.m) {
                 MetricTile(title: "Income", amount: income, type: .income,
-                           systemImage: "arrow.down.circle.fill")
+                           systemImage: "arrow.down.circle.fill", currencyCode: currencyCode)
                 MetricTile(title: "Expenses", amount: expenses, type: .expense,
-                           systemImage: "arrow.up.circle.fill")
+                           systemImage: "arrow.up.circle.fill", currencyCode: currencyCode)
             }
             HStack {
                 Text("Net")
                     .font(.subheadline)
                     .foregroundStyle(ScribeTheme.secondaryText)
                 Spacer()
-                MoneyText(amount: net, currencyCode: "AUD", sign: .signed, emphasis: .metric)
+                MoneyText(amount: net, currencyCode: currencyCode, sign: .signed, emphasis: .metric)
             }
         }
         .padding()

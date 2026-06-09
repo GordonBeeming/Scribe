@@ -49,19 +49,19 @@ struct BudgetItemQuery: EntityQuery, EntityStringQuery {
     @MainActor
     func entities(for identifiers: [UUID]) async throws -> [BudgetItemEntity] {
         let context = SharedModelContainer.shared.mainContext
-        let items = try context.fetch(FetchDescriptor<BudgetItem>())
-        let wanted = Set(identifiers)
-        return items.filter { wanted.contains($0.id) }.map(BudgetItemEntity.init)
+        let items = try context.fetch(
+            FetchDescriptor<BudgetItem>(predicate: #Predicate { identifiers.contains($0.id) })
+        )
+        return items.map(BudgetItemEntity.init)
     }
 
     @MainActor
     func entities(matching string: String) async throws -> [BudgetItemEntity] {
-        let query = string.lowercased()
         let context = SharedModelContainer.shared.mainContext
-        let items = try context.fetch(FetchDescriptor<BudgetItem>())
-        return items
-            .filter { $0.name.lowercased().contains(query) }
-            .map(BudgetItemEntity.init)
+        let items = try context.fetch(
+            FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.name.localizedStandardContains(string) })
+        )
+        return items.map(BudgetItemEntity.init)
     }
 
     @MainActor

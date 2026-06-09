@@ -109,7 +109,12 @@ final class SyncCoordinator: @unchecked Sendable {
     @MainActor
     var syncStatus: SyncStatus = .idle {
         didSet {
-            if case .synced = syncStatus { lastSyncDate = Date() }
+            // Only stamp on a real sync cycle completing (.syncing → .synced), not the
+            // initial .synced set when the engines are merely started, which would show
+            // a misleading "Last synced" before anything has actually synced.
+            if case .synced = syncStatus, case .syncing = oldValue {
+                lastSyncDate = Date()
+            }
         }
     }
 
@@ -132,6 +137,11 @@ final class SyncCoordinator: @unchecked Sendable {
         case synced
         case error(String)
     }
+
+    /// Set by `forceFullResync()` so the re-upload runs *after* `start(with:)` has
+    /// asynchronously recreated the engines — pushing before they exist is a no-op.
+    @MainActor
+    private var pendingResyncPush = false
 
     private init() {}
 
@@ -184,7 +194,15 @@ final class SyncCoordinator: @unchecked Sendable {
                 let sharedEngine = CKSyncEngine(sharedConfig)
                 self.sharedSyncEngine = sharedEngine
 
-                await MainActor.run { syncStatus = .synced }
+                // Engines now exist — run a resync re-upload if one was requested.
+                // forceFullResync() can't push directly because we get here async.
+                await MainActor.run {
+                    if pendingResyncPush {
+                        pendingResyncPush = false
+                        _ = pushAllLocalData()
+                    }
+                    syncStatus = .synced
+                }
                 logger.info("CKSyncEngine started successfully (private + shared)")
             } catch {
                 logger.error("Failed to start sync: \(error.localizedDescription)")
@@ -1142,46 +1160,36 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
     /// Force a full resync — the "Unstuck" recovery action.
     ///
-    /// Clears the cached change tags on every local model and drops the persisted
-    /// sync-engine state tokens, then restarts both engines (forcing a full server
-    /// re-fetch) and re-queues every local record for upload. Any save conflicts
-    /// that result are resolved by the timestamp-merge path, so both sides converge
-    /// on the newest data. Safe — it never deletes data.
+    /// Drops the persisted sync-engine state tokens (so the engines re-fetch
+    /// everything from the server) and re-queues every local record for upload.
+    /// Save conflicts that result are resolved by the timestamp-merge path, so both
+    /// sides converge on the newest data. Safe — it never deletes data.
+    ///
+    /// Cached `ckRecordData` is deliberately **kept**: it carries each record's zone
+    /// identity, which `pushAllLocalData()` needs to route shared records back to the
+    /// shared zone. Clearing it would re-upload shared items as private records and
+    /// duplicate them. A stale change tag is harmless — the server rejects with
+    /// `.serverRecordChanged` and the merge path reconciles it.
     @MainActor
     func forceFullResync() {
         guard let container = modelContainer else {
             logger.warning("forceFullResync called before sync started")
             return
         }
-        logger.info("forceFullResync: clearing cached records and sync state")
-        let context = container.mainContext
-
-        clearAllCKRecordData(in: context)
-        do {
-            try context.save()
-        } catch {
-            logger.error("forceFullResync: failed to clear cached records: \(error.localizedDescription)")
-        }
+        logger.info("forceFullResync: dropping sync state and re-queuing local records")
 
         let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
         defaults?.removeObject(forKey: stateKey)
         defaults?.removeObject(forKey: sharedStateKey)
 
+        // The re-upload must wait until start(with:) has recreated the engines — it
+        // does so asynchronously after an account-status check, so pushing here would
+        // be a no-op against nil engines. pendingResyncPush makes start() run the push
+        // once the engines exist.
+        pendingResyncPush = true
         stop()
         start(with: container)
-        _ = pushAllLocalData()
         syncStatus = .syncing
-    }
-
-    /// Null every model's cached CKRecord system fields (no save — caller saves).
-    @MainActor
-    private func clearAllCKRecordData(in context: ModelContext) {
-        for item in (try? context.fetch(FetchDescriptor<BudgetItem>())) ?? [] { item.ckRecordData = nil }
-        for o in (try? context.fetch(FetchDescriptor<AmountOverride>())) ?? [] { o.ckRecordData = nil }
-        for o in (try? context.fetch(FetchDescriptor<Occurrence>())) ?? [] { o.ckRecordData = nil }
-        for m in (try? context.fetch(FetchDescriptor<FamilyMember>())) ?? [] { m.ckRecordData = nil }
-        for s in (try? context.fetch(FetchDescriptor<DashboardSection>())) ?? [] { s.ckRecordData = nil }
-        for p in (try? context.fetch(FetchDescriptor<UserPreferences>())) ?? [] { p.ckRecordData = nil }
     }
 
     /// Clear cached CKRecord system fields so next upload creates a fresh record (no save — caller batches saves).
