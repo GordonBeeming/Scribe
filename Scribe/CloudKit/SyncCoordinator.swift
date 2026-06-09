@@ -107,7 +107,24 @@ final class SyncCoordinator: @unchecked Sendable {
     }
 
     @MainActor
-    var syncStatus: SyncStatus = .idle
+    var syncStatus: SyncStatus = .idle {
+        didSet {
+            if case .synced = syncStatus { lastSyncDate = Date() }
+        }
+    }
+
+    /// Timestamp of the last successful sync, surfaced in Settings so the user can
+    /// tell whether sync is actually progressing.
+    @MainActor
+    var lastSyncDate: Date?
+
+    /// Number of local changes still queued for upload across both engines. A count
+    /// that never drains is the signal that sync is stuck.
+    @MainActor
+    var pendingChangeCount: Int {
+        (syncEngine?.state.pendingRecordZoneChanges.count ?? 0)
+            + (sharedSyncEngine?.state.pendingRecordZoneChanges.count ?? 0)
+    }
 
     enum SyncStatus: Sendable {
         case idle
@@ -1007,11 +1024,28 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
             switch error.code {
             case .serverRecordChanged:
-                // Conflict — server has a newer version. Use server record as base and re-queue.
+                // Conflict — another device saved this record first. Resolve by
+                // modifiedAt (last-writer-wins), but ACTUALLY merge: previously we
+                // only cached the server's change tag and re-pushed our local copy,
+                // which silently discarded the other device's edit and left the
+                // loser showing stale data. Now apply the server's fields when its
+                // copy is newer/equal, and only re-push when ours is genuinely newer.
                 if let serverRecord = error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord {
-                    logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — merging with server record")
-                    updateCKRecordData(from: serverRecord, in: context)
-                    targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    let serverModified = serverRecord["modifiedAt"] as? Date ?? Date.distantPast
+                    let localModified = localModifiedAt(forRecordName: recordID.recordName, in: context) ?? Date.distantPast
+                    let localIsNewer = localModified > serverModified
+
+                    // applyFetchedRecord applies the server fields only when the
+                    // server copy is newer/equal, and always refreshes the cached
+                    // change tag — so a re-push afterwards carries the correct tag.
+                    applyFetchedRecord(serverRecord, to: context)
+
+                    if localIsNewer {
+                        logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — local is newer, re-pushing with refreshed tag")
+                        targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    } else {
+                        logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — server is newer, applied server copy")
+                    }
                 }
 
             case .zoneNotFound:
@@ -1044,7 +1078,12 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 logger.info("[\(engineLabel)] Transient error for \(recordID.recordName): \(error.localizedDescription)")
 
             default:
+                // Don't silently drop: the change stays queued for the engine to
+                // retry, and we surface the failure so the state is visible (and the
+                // user can reach for "Unstuck" if it never clears).
                 logger.error("[\(engineLabel)] Failed to save record \(recordID.recordName): \(error.localizedDescription)")
+                let message = error.localizedDescription
+                Task { @MainActor in syncStatus = .error(message) }
             }
         }
 
@@ -1076,6 +1115,73 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
             preferences.ckRecordData = ckData
         }
+    }
+
+    /// The local model's `modifiedAt` for a record name, used to decide the winner
+    /// of a save conflict. Returns nil if no local model matches.
+    @MainActor
+    private func localModifiedAt(forRecordName name: String, in context: ModelContext) -> Date? {
+        guard let uuid = UUID(uuidString: name) else { return nil }
+        if let item = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
+            return item.modifiedAt
+        } else if let override_ = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
+            return override_.modifiedAt
+        } else if let occurrence = try? context.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
+            return occurrence.modifiedAt
+        } else if let member = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
+            return member.modifiedAt
+        } else if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
+            return section.modifiedAt
+        } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
+            return preferences.modifiedAt
+        }
+        return nil
+    }
+
+    // MARK: - Recovery
+
+    /// Force a full resync — the "Unstuck" recovery action.
+    ///
+    /// Clears the cached change tags on every local model and drops the persisted
+    /// sync-engine state tokens, then restarts both engines (forcing a full server
+    /// re-fetch) and re-queues every local record for upload. Any save conflicts
+    /// that result are resolved by the timestamp-merge path, so both sides converge
+    /// on the newest data. Safe — it never deletes data.
+    @MainActor
+    func forceFullResync() {
+        guard let container = modelContainer else {
+            logger.warning("forceFullResync called before sync started")
+            return
+        }
+        logger.info("forceFullResync: clearing cached records and sync state")
+        let context = container.mainContext
+
+        clearAllCKRecordData(in: context)
+        do {
+            try context.save()
+        } catch {
+            logger.error("forceFullResync: failed to clear cached records: \(error.localizedDescription)")
+        }
+
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        defaults?.removeObject(forKey: stateKey)
+        defaults?.removeObject(forKey: sharedStateKey)
+
+        stop()
+        start(with: container)
+        _ = pushAllLocalData()
+        syncStatus = .syncing
+    }
+
+    /// Null every model's cached CKRecord system fields (no save — caller saves).
+    @MainActor
+    private func clearAllCKRecordData(in context: ModelContext) {
+        for item in (try? context.fetch(FetchDescriptor<BudgetItem>())) ?? [] { item.ckRecordData = nil }
+        for o in (try? context.fetch(FetchDescriptor<AmountOverride>())) ?? [] { o.ckRecordData = nil }
+        for o in (try? context.fetch(FetchDescriptor<Occurrence>())) ?? [] { o.ckRecordData = nil }
+        for m in (try? context.fetch(FetchDescriptor<FamilyMember>())) ?? [] { m.ckRecordData = nil }
+        for s in (try? context.fetch(FetchDescriptor<DashboardSection>())) ?? [] { s.ckRecordData = nil }
+        for p in (try? context.fetch(FetchDescriptor<UserPreferences>())) ?? [] { p.ckRecordData = nil }
     }
 
     /// Clear cached CKRecord system fields so next upload creates a fresh record (no save — caller batches saves).
