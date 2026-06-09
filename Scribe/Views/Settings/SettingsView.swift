@@ -253,7 +253,7 @@ private struct SyncActionsRow: View {
             Button("Force Full Resync") { runUnstuck() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Re-downloads everyone's latest data and re-uploads yours. Safe — nothing is deleted, but it may take a minute to settle.")
+            Text("Re-downloads everyone's latest data and re-uploads yours. Nothing is deleted, but it may take a minute to settle.")
         }
     }
 
