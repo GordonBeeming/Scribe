@@ -217,8 +217,9 @@ private struct FilterChip: View {
                 .foregroundStyle(isSelected ? ScribeTheme.textOnPrimary : ScribeTheme.secondaryText)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                // Flat capsules — selected fills with the brand colour, unselected a
-                // faint surface. Glass on chips this small just stacked tiny shadows.
+                // Flat capsules: the selected chip fills with the brand colour, and
+                // unselected chips get a faint surface. Glass on chips this small just
+                // stacked tiny shadows.
                 .background(
                     isSelected ? ScribeTheme.primary : ScribeTheme.surface.opacity(0.65),
                     in: .capsule
