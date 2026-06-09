@@ -15,6 +15,13 @@ extension View {
             )
     }
 
+    /// Surface fill for a `Form`/`List` section shown over the Scribe gradient,
+    /// so grouped rows read as soft cards instead of vanishing when the default
+    /// grouped background is hidden. Apply to a `Section`.
+    func scribeSection() -> some View {
+        listRowBackground(ScribeTheme.surface.opacity(0.55))
+    }
+
     /// Hero card for the primary summary surface — larger radius and a faint
     /// brand tint so it reads as the focal point of the screen.
     func scribeHeroCard(padding: CGFloat = ScribeDesign.Spacing.xl) -> some View {

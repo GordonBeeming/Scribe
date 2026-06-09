@@ -24,7 +24,7 @@ struct BudgetItemListView: View {
                         } label: {
                             Text("Add First Item")
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.glassProminent)
                     }
                 } else {
                     List {
@@ -38,6 +38,7 @@ struct BudgetItemListView: View {
                                         NavigationLink(value: item) {
                                             BudgetItemRowView(item: item)
                                         }
+                                        .listRowBackground(ScribeTheme.surface.opacity(0.55))
                                         .swipeActions(edge: .trailing) {
                                             Button(role: .destructive) {
                                                 let deletedID = item.id
@@ -89,6 +90,7 @@ struct BudgetItemListView: View {
                     .searchable(text: $viewModel.searchText, prompt: "Search items")
                 }
             }
+            .scribeScreen()
             .navigationTitle("Budget Items")
             .navigationDestination(for: BudgetItem.self) { item in
                 BudgetItemDetailView(item: item)
@@ -175,11 +177,14 @@ private struct CloseItemSheet: View {
                     Text("Close \"\(item.name)\" so it no longer appears in future periods.")
                         .foregroundStyle(ScribeTheme.secondaryText)
                 }
+                .scribeSection()
 
                 Section("End Date") {
                     DatePicker("Last active date", selection: $endDate, displayedComponents: .date)
                 }
+                .scribeSection()
             }
+            .scribeScreen()
             .navigationTitle("Close Item")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

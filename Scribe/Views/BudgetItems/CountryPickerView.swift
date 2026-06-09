@@ -74,6 +74,7 @@ struct CountryPickerView: View {
                 }
             }
         }
+        .scribeScreen()
         .navigationTitle("Holiday Country")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search countries")

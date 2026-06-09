@@ -60,30 +60,31 @@ struct BudgetItemRowView: View {
         return formatter.string(from: NSNumber(value: day)) ?? "\(day)"
     }
 
+    private var avatarTint: Color {
+        item.type == .income ? ScribeTheme.success : ScribeTheme.primary
+    }
+
     var body: some View {
-        HStack {
-            Image(systemName: item.category.systemImage)
-                .foregroundStyle(ScribeTheme.accent)
-                .frame(width: 28)
+        HStack(spacing: ScribeDesign.Spacing.m) {
+            ZStack {
+                Circle()
+                    .fill(avatarTint.opacity(0.18))
+                    .frame(width: 40, height: 40)
+                Image(systemName: item.category.systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(avatarTint)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack {
+                HStack(spacing: ScribeDesign.Spacing.s) {
                     Text(item.name)
-                        .font(.body)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(ScribeTheme.primaryText)
+                        .lineLimit(1)
                     if let endDate = item.endDate {
-                        Text("Closed \(endDate, format: .dateTime.day().month())")
-                            .font(.caption2)
-                            .foregroundStyle(ScribeTheme.error)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.ultraThinMaterial, in: Capsule())
+                        statusBadge("Closed \(endDate.formatted(.dateTime.day().month()))", color: ScribeTheme.error)
                     } else if !item.isActive {
-                        Text("Paused")
-                            .font(.caption2)
-                            .foregroundStyle(ScribeTheme.secondaryText)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.ultraThinMaterial, in: Capsule())
+                        statusBadge("Paused", color: ScribeTheme.secondaryText)
                     }
                 }
 
@@ -95,17 +96,27 @@ struct BudgetItemRowView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(ScribeTheme.secondaryText)
+                .lineLimit(1)
             }
 
-            Spacer()
+            Spacer(minLength: ScribeDesign.Spacing.s)
 
-            AmountText(
+            MoneyText(
                 amount: item.amount,
                 currencyCode: item.currencyCode,
-                type: item.type
+                type: item.type,
+                emphasis: .money
             )
-            .font(.body.monospacedDigit())
         }
-        .opacity(item.isActive && item.endDate == nil ? 1.0 : 0.6)
+        .opacity(item.isActive && item.endDate == nil ? 1.0 : 0.55)
+    }
+
+    private func statusBadge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.14), in: .capsule)
     }
 }

@@ -45,6 +45,7 @@ struct BudgetItemFormView: View {
                         }
                     }
                 }
+                .scribeSection()
 
                 Section("Schedule") {
                     FrequencyPicker(
@@ -53,6 +54,7 @@ struct BudgetItemFormView: View {
                         referenceDate: $viewModel.referenceDate
                     )
                 }
+                .scribeSection()
 
                 Section("Category") {
                     Picker("Category", selection: $viewModel.category) {
@@ -61,6 +63,7 @@ struct BudgetItemFormView: View {
                         }
                     }
                 }
+                .scribeSection()
 
                 if viewModel.itemType == .income {
                     Section("Income Settings") {
@@ -107,6 +110,7 @@ struct BudgetItemFormView: View {
                             }
                         }
                     }
+                    .scribeSection()
                 }
 
                 if !familyMembers.isEmpty {
@@ -124,6 +128,7 @@ struct BudgetItemFormView: View {
                             ))
                         }
                     }
+                    .scribeSection()
                 }
 
                 Section {
@@ -140,12 +145,15 @@ struct BudgetItemFormView: View {
                         }
                     }
                 }
+                .scribeSection()
 
                 Section("Notes") {
                     TextField("Notes (optional)", text: $viewModel.notes, axis: .vertical)
                         .lineLimit(3...6)
                 }
+                .scribeSection()
             }
+            .scribeScreen()
             .navigationTitle(isEditing ? "Edit Item" : "New Item")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
