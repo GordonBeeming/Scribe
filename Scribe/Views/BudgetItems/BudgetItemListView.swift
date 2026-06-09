@@ -224,7 +224,9 @@ private struct FilterChip: View {
                     in: .capsule
                 )
         }
-        .buttonStyle(.plain)
+        // .borderless keeps native tap-dim feedback without the List row
+        // intercepting the tap; the Text sets its own colours so it isn't tinted.
+        .buttonStyle(.borderless)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
