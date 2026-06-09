@@ -11,7 +11,7 @@ struct BudgetSummaryView: View {
     @State private var viewModel = DashboardViewModel()
     @State private var holidays: Set<Date> = []
 
-    private var baseCurrency: String { ExchangeRateCache.shared.baseCurrency }
+    @MainActor private var baseCurrency: String { ExchangeRateCache.shared.baseCurrency }
 
     var body: some View {
         NavigationStack {
@@ -215,13 +215,15 @@ struct BudgetSummaryView: View {
     }
 
     private struct SimpleUpcomingItem: Identifiable {
-        let id = UUID()
         let name: String
         let amount: Decimal
         let currencyCode: String
         let isIncome: Bool
         let dueDate: Date
         let systemImage: String
+        // Stable id derived from content — computeUpcomingItems() runs every redraw,
+        // so a fresh UUID each time would defeat SwiftUI's ForEach diffing.
+        var id: String { "\(name)|\(dueDate.timeIntervalSince1970)" }
     }
 
     private func computeSummary() -> Summary {

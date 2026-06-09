@@ -37,10 +37,10 @@ enum WatchTheme {
 struct WatchMoney: View {
     let amount: Decimal
     let currencyCode: String
-    var type: ItemType?
-    var sign: CurrencyFormatter.SignStyle
-    var font: Font
-    var colored: Bool
+    let type: ItemType?
+    let sign: CurrencyFormatter.SignStyle
+    let font: Font
+    let colored: Bool
 
     init(
         _ amount: Decimal,

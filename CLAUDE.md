@@ -13,7 +13,7 @@ XcodeGen generates `Scribe.xcodeproj` (gitignored) from `project.yml`. Run `xcod
 | `ScribeWatch` | watchOS | `com.gordonbeeming.scribe.watch` | The Watch app. |
 | `ScribeWatchWidget` | watchOS | `com.gordonbeeming.scribe.watch.widget` | Watch complications. |
 
-**Shared code:** `Scribe/Models`, `Scribe/Utilities`, `Scribe/Services`, `Scribe/CloudKit`, and `Scribe/ViewModels` are compiled into the watch and widget targets too (see the `sources:` lists in `project.yml`). **`Scribe/Views` is iOS-only** — the watch and widgets do NOT see it, so they can't use `ScribeTheme`, `MoneyText`, or anything in `Scribe/Views/DesignSystem`. That's why the watch has its own `ScribeWatch/WatchTheme.swift` and the watch widget defines its colours inline.
+**Shared code** (see the `sources:` lists in `project.yml`): the **watch app** (`ScribeWatch`) compiles in `Scribe/Models`, `Scribe/Utilities`, `Scribe/Services`, `Scribe/CloudKit`, and `Scribe/ViewModels`. The **widgets** (`ScribeWidget`, `ScribeWatchWidget`) only get `Scribe/Models` + `Scribe/Utilities` — they can't reach Services/CloudKit/ViewModels, so each widget opens its own SwiftData store directly. **`Scribe/Views` is iOS-only** — neither the watch nor the widgets see it, so they can't use `ScribeTheme`, `MoneyText`, or anything in `Scribe/Views/DesignSystem`. That's why the watch has its own `ScribeWatch/WatchTheme.swift` and the widgets define their colours inline.
 
 All targets read the same SwiftData store from the app group `group.com.gordonbeeming.scribe` (see `SharedModelContainer`).
 
