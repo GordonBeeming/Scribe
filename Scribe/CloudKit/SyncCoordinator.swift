@@ -223,7 +223,12 @@ final class SyncCoordinator: @unchecked Sendable {
             return
         }
         let options = CKSyncEngine.FetchChangesOptions()
-        Task {
+        // Detached so the fetch never inherits the caller's executor. This is
+        // reachable from inside a CKSyncEngine delegate callback (sign-in and
+        // forceFullResync both route here via pushAllLocalData), and calling
+        // fetchChanges on the engine's own serial delegate executor trips its
+        // re-entrancy guard and traps (EXC_BREAKPOINT).
+        Task.detached { [sharedSyncEngine, logger] in
             do {
                 try await sharedSyncEngine.fetchChanges(options)
                 logger.info("Shared changes fetch completed")
