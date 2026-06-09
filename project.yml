@@ -43,7 +43,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gordonbeeming.scribe
         CODE_SIGN_ENTITLEMENTS: Scribe/Scribe.entitlements
-        MARKETING_VERSION: "1.2"
+        MARKETING_VERSION: "1.3"
         CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -72,15 +72,15 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: Scribe Widget
+        # WidgetKit widgets use NSExtension only; carrying EXAppExtensionAttributes
+        # as well is invalid and fails App Store upload validation.
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
-        EXAppExtensionAttributes:
-          EXExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gordonbeeming.scribe.widget
         CODE_SIGN_ENTITLEMENTS: ScribeWidget/ScribeWidget.entitlements
-        MARKETING_VERSION: "1.2"
+        MARKETING_VERSION: "1.3"
         CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: "1,2"
 
@@ -115,7 +115,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gordonbeeming.scribe.watch
         CODE_SIGN_ENTITLEMENTS: ScribeWatch/ScribeWatch.entitlements
-        MARKETING_VERSION: "1.2"
+        MARKETING_VERSION: "1.3"
         CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
@@ -145,7 +145,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gordonbeeming.scribe.watch.widget
         CODE_SIGN_ENTITLEMENTS: ScribeWatchWidget/ScribeWatchWidget.entitlements
-        MARKETING_VERSION: "1.2"
+        MARKETING_VERSION: "1.3"
         CURRENT_PROJECT_VERSION: 1
 
   ScribeTests:

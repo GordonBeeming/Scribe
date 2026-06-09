@@ -215,6 +215,7 @@ jobs:
 
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
           echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+          echo "MARKETING_VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Embed commit hash in source Info.plist
         run: |
@@ -299,13 +300,46 @@ jobs:
           fi
           ls -lh $RUNNER_TEMP/export/Scribe.ipa
 
-      - name: Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@9fd28d4e690396e43caca69cef54cccccce77034 # v3.0.1
-        with:
-          app-path: ${{ runner.temp }}/export/Scribe.ipa
-          issuer-id: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
-          api-key-id: ${{ vars.APP_STORE_CONNECT_API_KEY_ID }}
-          api-private-key: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+      # Validate + upload directly with altool. The apple-actions wrapper swallowed
+      # altool's "UPLOAD FAILED" and exited 0, so failed uploads went green and the
+      # build never reached App Store Connect. This step fails the job on any error
+      # and prints the exact ITMS messages (validation surfaces them readably).
+      - name: Validate and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ vars.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          IPA="$RUNNER_TEMP/export/Scribe.ipa"
+          KEY_DIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEY_DIR"
+          chmod 700 "$KEY_DIR"
+          # Write the key, then lock it down — default umask can leave the .p8
+          # world-readable on a shared runner.
+          KEY_FILE="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          ( umask 177; printf '%s' "$ASC_API_KEY" > "$KEY_FILE" )
+          chmod 600 "$KEY_FILE"
+
+          run_altool () {
+            # $1 = --validate-app | --upload-app ; tee output and fail on altool's
+            # own error reporting even if it exits 0 in some modes.
+            local action="$1" log="$RUNNER_TEMP/altool_${1#--}.log"
+            if ! xcrun altool "$action" -f "$IPA" -t ios \
+                  --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee "$log"; then
+              echo "::error::altool $action exited non-zero"; return 1
+            fi
+            if grep -qiE "UPLOAD FAILED|VALIDATE FAILED|ERROR ITMS|\*\* ERROR|errorMessage" "$log"; then
+              echo "::error::altool $action reported errors (see log above)"; return 1
+            fi
+          }
+
+          echo "==> Validating build ${BUILD_NUMBER} (${MARKETING_VERSION}) ..."
+          run_altool --validate-app
+          echo "==> Uploading to TestFlight ..."
+          run_altool --upload-app
+          echo "Upload succeeded."
 
       - name: Clean up
         if: always()
