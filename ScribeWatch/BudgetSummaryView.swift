@@ -11,6 +11,8 @@ struct BudgetSummaryView: View {
     @State private var viewModel = DashboardViewModel()
     @State private var holidays: Set<Date> = []
 
+    private var baseCurrency: String { ExchangeRateCache.shared.baseCurrency }
+
     var body: some View {
         NavigationStack {
             let enabledSections = dashboardSections.filter(\.isEnabled)
@@ -52,7 +54,7 @@ struct BudgetSummaryView: View {
                     if group.items.count > 10 {
                         Text("+\(group.items.count - 10) more")
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(WatchTheme.secondary)
                     }
                 }
             }
@@ -61,65 +63,56 @@ struct BudgetSummaryView: View {
     }
 
     private func weekGroupHeader(_ group: DashboardViewModel.WeekGroup) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let net = group.rollingNet ?? group.delta
+        return VStack(alignment: .leading, spacing: 5) {
             Text(group.label)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(WatchTheme.secondary)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(group.rollingNet != nil ? "Net (rolling)" : "Net")
+                    .font(.system(size: 10))
+                    .foregroundStyle(WatchTheme.secondary)
+                Spacer()
+                WatchMoney(net, currencyCode: baseCurrency, sign: .automatic,
+                           font: .title3.monospacedDigit().bold())
+            }
 
             HStack {
-                VStack(alignment: .leading) {
-                    Text("In")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                    Text(CurrencyFormatter.format(group.totalIncome, currencyCode: "AUD", signStyle: .none))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.green)
-                }
-
+                miniStat("In", group.totalIncome, type: .income, align: .leading)
                 Spacer()
-
-                VStack {
-                    Text("Out")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                    Text(CurrencyFormatter.format(group.totalExpenses, currencyCode: "AUD", signStyle: .none))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.red)
-                }
-
-                Spacer()
-
-                VStack(alignment: .trailing) {
-                    Text(group.rollingNet != nil ? "Rolling" : "Net")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                    let net = group.rollingNet ?? group.delta
-                    Text(CurrencyFormatter.format(net, currencyCode: "AUD", signStyle: .automatic))
-                        .font(.headline.monospacedDigit().bold())
-                        .foregroundStyle(net >= 0 ? .green : .red)
-                }
+                miniStat("Out", group.totalExpenses, type: .expense, align: .trailing)
             }
 
             if group.totalCount > 0 {
                 Text("\(group.confirmedCount)/\(group.totalCount) confirmed")
                     .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(WatchTheme.secondary)
             }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func miniStat(_ label: String, _ amount: Decimal, type: ItemType, align: HorizontalAlignment) -> some View {
+        VStack(alignment: align, spacing: 0) {
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundStyle(WatchTheme.secondary)
+            WatchMoney(amount, currencyCode: baseCurrency, type: type, sign: .none)
         }
     }
 
     private func watchItemRow(_ item: DashboardViewModel.UpcomingItem) -> some View {
-        let iconName = item.isConfirmed ? "checkmark.circle.fill"
-            : item.isSkipped ? "arrow.uturn.right.circle"
-            : "circle"
-        let iconColor: Color = item.isConfirmed ? .green
-            : item.isSkipped ? .secondary
-            : .secondary
+        let type = item.budgetItem.type
+        let avatarTint: Color = item.isConfirmed ? WatchTheme.income
+            : item.isSkipped ? WatchTheme.secondary
+            : WatchTheme.categoryTint(for: type)
+        let avatarIcon = item.isConfirmed ? (type == .income ? "arrow.down" : "checkmark")
+            : item.isSkipped ? "arrow.uturn.right"
+            : item.budgetItem.category.systemImage
 
-        return HStack {
-            Image(systemName: iconName)
-                .foregroundStyle(iconColor)
-                .font(.caption2)
+        return HStack(spacing: 8) {
+            WatchAvatar(systemImage: avatarIcon, tint: avatarTint, size: 24)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.budgetItem.name)
@@ -128,19 +121,19 @@ struct BudgetSummaryView: View {
                     .strikethrough(item.isConfirmed || item.isSkipped)
                 Text(item.dueDate, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
                     .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(WatchTheme.secondary)
             }
 
-            Spacer()
+            Spacer(minLength: 4)
 
-            Text(CurrencyFormatter.format(
+            WatchMoney(
                 item.effectiveBalanceAmount,
                 currencyCode: item.budgetItem.currencyCode,
-                signStyle: item.budgetItem.type == .income ? .alwaysPositive : .alwaysNegative
-            ))
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(item.budgetItem.type == .income ? .green : .red)
+                type: type,
+                sign: type == .income ? .alwaysPositive : .alwaysNegative
+            )
         }
+        .opacity(item.isSkipped ? 0.5 : 1)
     }
 
     // MARK: - Fallback (no weekly section configured)
@@ -149,25 +142,17 @@ struct BudgetSummaryView: View {
         List {
             Section {
                 let summary = computeSummary()
-                VStack(alignment: .leading, spacing: 4) {
+                let net = summary.totalIncome - summary.totalExpenses
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Next 7 Days")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.caption2)
+                        .foregroundStyle(WatchTheme.secondary)
+                    WatchMoney(net, currencyCode: baseCurrency, sign: .automatic,
+                               font: .title2.monospacedDigit().bold())
                     HStack {
-                        let net = summary.totalIncome - summary.totalExpenses
-                        Text(CurrencyFormatter.format(net, currencyCode: "AUD", signStyle: .automatic))
-                            .font(.title3.monospacedDigit().bold())
-                            .foregroundStyle(net >= 0 ? .green : .red)
-                    }
-                    HStack(spacing: 12) {
-                        Label(CurrencyFormatter.format(summary.totalIncome, currencyCode: "AUD", signStyle: .none),
-                              systemImage: "arrow.down.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
-                        Label(CurrencyFormatter.format(summary.totalExpenses, currencyCode: "AUD", signStyle: .none),
-                              systemImage: "arrow.up.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.red)
+                        miniStat("In", summary.totalIncome, type: .income, align: .leading)
+                        Spacer()
+                        miniStat("Out", summary.totalExpenses, type: .expense, align: .trailing)
                     }
                 }
                 .padding(.vertical, 2)
@@ -177,23 +162,31 @@ struct BudgetSummaryView: View {
                 let upcoming = computeUpcomingItems()
                 if upcoming.isEmpty {
                     Text("No upcoming items")
-                        .foregroundStyle(.secondary)
+                        .font(.caption2)
+                        .foregroundStyle(WatchTheme.secondary)
                 } else {
-                    ForEach(upcoming.prefix(10), id: \.id) { item in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
+                    ForEach(upcoming.prefix(10)) { item in
+                        HStack(spacing: 8) {
+                            WatchAvatar(
+                                systemImage: item.isIncome ? "dollarsign.circle" : item.systemImage,
+                                tint: WatchTheme.categoryTint(for: item.isIncome ? .income : .expense),
+                                size: 24
+                            )
+                            VStack(alignment: .leading, spacing: 1) {
                                 Text(item.name)
-                                    .font(.caption)
+                                    .font(.caption2)
                                     .lineLimit(1)
                                 Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(WatchTheme.secondary)
                             }
-                            Spacer()
-                            Text(CurrencyFormatter.format(item.amount, currencyCode: item.currencyCode,
-                                signStyle: item.isIncome ? .alwaysPositive : .alwaysNegative))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(item.isIncome ? .green : .red)
+                            Spacer(minLength: 4)
+                            WatchMoney(
+                                item.amount,
+                                currencyCode: item.currencyCode,
+                                type: item.isIncome ? .income : .expense,
+                                sign: item.isIncome ? .alwaysPositive : .alwaysNegative
+                            )
                         }
                     }
                 }
@@ -228,6 +221,7 @@ struct BudgetSummaryView: View {
         let currencyCode: String
         let isIncome: Bool
         let dueDate: Date
+        let systemImage: String
     }
 
     private func computeSummary() -> Summary {
@@ -269,7 +263,8 @@ struct BudgetSummaryView: View {
                     amount: item.effectiveAmount(on: date),
                     currencyCode: item.currencyCode,
                     isIncome: item.type == .income,
-                    dueDate: date
+                    dueDate: date,
+                    systemImage: item.category.systemImage
                 ))
             }
         }

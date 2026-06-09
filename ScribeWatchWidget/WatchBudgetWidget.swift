@@ -170,6 +170,13 @@ struct WatchBudgetProvider: TimelineProvider {
 
 // MARK: - Views
 
+/// Refined money tones, matching the watch app's WatchTheme (separate target, so
+/// duplicated here). Shown in full-colour complication contexts.
+private extension Color {
+    static let scribeIncome = Color(red: 0.263, green: 0.820, blue: 0.498)
+    static let scribeExpense = Color(red: 0.949, green: 0.420, blue: 0.369)
+}
+
 struct WatchBudgetWidgetView: View {
     let entry: WatchBudgetEntry
 
@@ -211,7 +218,7 @@ struct WatchBudgetWidgetView: View {
                 Spacer()
                 Text(CurrencyFormatter.format(entry.net, currencyCode: "AUD", signStyle: .automatic))
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(entry.net >= 0 ? .green : .red)
+                    .foregroundStyle(entry.net >= 0 ? Color.scribeIncome : Color.scribeExpense)
             }
             if let name = entry.nextItemName, let amount = entry.nextItemAmount {
                 HStack {
@@ -221,7 +228,7 @@ struct WatchBudgetWidgetView: View {
                     Spacer()
                     Text(CurrencyFormatter.format(amount, currencyCode: "AUD", signStyle: entry.nextItemIsIncome ? .alwaysPositive : .alwaysNegative))
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(entry.nextItemIsIncome ? .green : .red)
+                        .foregroundStyle(entry.nextItemIsIncome ? Color.scribeIncome : Color.scribeExpense)
                 }
             } else {
                 Text("No upcoming items")
@@ -240,7 +247,7 @@ struct WatchBudgetWidgetView: View {
         VStack {
             Text(CurrencyFormatter.format(entry.net, currencyCode: "AUD", signStyle: .automatic))
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(entry.net >= 0 ? .green : .red)
+                .foregroundStyle(entry.net >= 0 ? Color.scribeIncome : Color.scribeExpense)
         }
         .widgetLabel {
             Text("Budget")
