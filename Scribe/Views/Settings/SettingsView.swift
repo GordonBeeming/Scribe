@@ -29,6 +29,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(ScribeTheme.secondaryText)
                 }
+                .scribeSection()
 
                 Section("Dashboard") {
                     NavigationLink("Dashboard Sections") {
@@ -40,23 +41,27 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(ScribeTheme.secondaryText)
                 }
+                .scribeSection()
 
                 Section("Family Members") {
                     NavigationLink("Manage Family Members") {
                         FamilyMemberManagementView()
                     }
                 }
+                .scribeSection()
 
                 Section("Family Sharing") {
                     NavigationLink("Manage Sharing") {
                         SharingView()
                     }
                 }
+                .scribeSection()
 
                 Section("Sync") {
                     SyncStatusRow()
                     SyncActionsRow()
                 }
+                .scribeSection()
 
                 DataManagementSection()
 
@@ -66,7 +71,9 @@ struct SettingsView: View {
                         .foregroundStyle(ScribeTheme.secondaryText)
                         .frame(maxWidth: .infinity)
                 }
+                .scribeSection()
             }
+            .scribeScreen()
             .navigationTitle("Settings")
             .onAppear {
                 viewModel = SettingsViewModel(modelContext: modelContext)
@@ -101,6 +108,7 @@ struct FamilyMemberManagementView: View {
                     .disabled(newMemberName.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .scribeSection()
 
             Section {
                 ForEach(familyMembers) { member in
@@ -117,41 +125,60 @@ struct FamilyMemberManagementView: View {
                     }
                 }
             }
+            .scribeSection()
         }
+        .scribeScreen()
         .navigationTitle("Family Members")
     }
 }
 
 private struct SyncStatusRow: View {
+    @MainActor
     var body: some View {
         let status = SyncCoordinator.shared.syncStatus
-        HStack {
-            Text("CloudKit Sync")
-            Spacer()
-            switch status {
-            case .idle:
-                Image(systemName: "minus.circle")
-                    .foregroundStyle(ScribeTheme.secondaryText)
-                Text("Idle")
-                    .foregroundStyle(ScribeTheme.secondaryText)
-            case .syncing:
-                ProgressView()
-                    .controlSize(.small)
-                Text("Syncing")
-                    .foregroundStyle(ScribeTheme.secondaryText)
-            case .synced:
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(ScribeTheme.success)
-                Text("Active")
-                    .foregroundStyle(ScribeTheme.secondaryText)
-            case .error(let message):
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(ScribeTheme.error)
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(ScribeTheme.error)
-                    .lineLimit(1)
+        let lastSync = SyncCoordinator.shared.lastSyncDate
+        let pending = SyncCoordinator.shared.pendingChangeCount
+        VStack(alignment: .leading, spacing: ScribeDesign.Spacing.xs) {
+            HStack {
+                Text("CloudKit Sync")
+                Spacer()
+                switch status {
+                case .idle:
+                    Image(systemName: "minus.circle")
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                    Text("Idle")
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                case .syncing:
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Syncing")
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                case .synced:
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(ScribeTheme.success)
+                    Text("Active")
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                case .error(let message):
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(ScribeTheme.error)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(ScribeTheme.error)
+                        .lineLimit(1)
+                }
             }
+
+            // Surface enough state to tell whether sync is actually progressing.
+            HStack(spacing: ScribeDesign.Spacing.s) {
+                if let lastSync {
+                    Text("Last synced \(lastSync.formatted(.relative(presentation: .named)))")
+                }
+                if pending > 0 {
+                    Text("· \(pending) pending")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(ScribeTheme.secondaryText)
         }
     }
 }
@@ -159,6 +186,9 @@ private struct SyncStatusRow: View {
 private struct SyncActionsRow: View {
     @State private var syncResult: String?
     @State private var isSyncing = false
+    @State private var showingUnstuckConfirm = false
+    @State private var isResyncing = false
+    @State private var resyncResult: String?
 
     var body: some View {
         Button {
@@ -195,6 +225,51 @@ private struct SyncActionsRow: View {
             }
         }
         .disabled(isSyncing)
+
+        Button {
+            showingUnstuckConfirm = true
+        } label: {
+            HStack {
+                Label("Unstuck Sync", systemImage: "wand.and.sparkles")
+                Spacer()
+                if isResyncing {
+                    if let resyncResult {
+                        Text(resyncResult)
+                            .font(.caption)
+                            .foregroundStyle(ScribeTheme.secondaryText)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+            }
+        }
+        .disabled(isResyncing)
+        .confirmationDialog(
+            "Unstuck Sync",
+            isPresented: $showingUnstuckConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Force Full Resync") { runUnstuck() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Re-downloads everyone's latest data and re-uploads yours. Safe — nothing is deleted, but it may take a minute to settle.")
+        }
+    }
+
+    private func runUnstuck() {
+        guard !isResyncing else { return }
+        isResyncing = true
+        resyncResult = nil
+        Task { @MainActor in
+            SyncCoordinator.shared.forceFullResync()
+            resyncResult = "Resyncing…"
+            try? await Task.sleep(for: .seconds(3))
+            withAnimation {
+                resyncResult = nil
+                isResyncing = false
+            }
+        }
     }
 }
 
