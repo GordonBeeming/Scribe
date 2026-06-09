@@ -15,6 +15,9 @@ struct ContentView: View {
                 SettingsView()
             }
         }
+        // Adaptive: compact iPhone tab bar, iPad/large sidebar.
+        .tabViewStyle(.sidebarAdaptable)
+        .tint(ScribeTheme.primary)
     }
 }
 

@@ -10,77 +10,15 @@ struct WeeklyBudgetCard: View {
 
     @State private var isExpanded: Bool = true
 
+    private var net: Decimal { group.rollingNet ?? group.delta }
+    private var netLabel: String { group.rollingNet != nil ? "Net (rolling)" : "Net" }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Header - always visible
-            Button {
-                withAnimation { isExpanded.toggle() }
-            } label: {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(group.label)
-                            .font(.headline)
-                            .foregroundStyle(ScribeTheme.primaryText)
-                        Spacer()
-                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .foregroundStyle(ScribeTheme.secondaryText)
-                    }
-
-                    // Income / Expenses / Net row
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text("Income")
-                                .font(.caption)
-                                .foregroundStyle(ScribeTheme.secondaryText)
-                            AmountText(
-                                amount: group.totalIncome,
-                                currencyCode: "AUD",
-                                type: .income,
-                                showSign: false
-                            )
-                            .font(.title3.bold())
-                        }
-
-                        Spacer()
-
-                        VStack {
-                            Text("Expenses")
-                                .font(.caption)
-                                .foregroundStyle(ScribeTheme.secondaryText)
-                            AmountText(
-                                amount: group.totalExpenses,
-                                currencyCode: "AUD",
-                                type: .expense,
-                                showSign: false
-                            )
-                            .font(.title3.bold())
-                        }
-
-                        Spacer()
-
-                        VStack(alignment: .trailing) {
-                            Text(group.rollingNet != nil ? "Net (rolling)" : "Net")
-                                .font(.caption)
-                                .foregroundStyle(ScribeTheme.secondaryText)
-                            let net = group.rollingNet ?? group.delta
-                            Text(CurrencyFormatter.format(net, currencyCode: "AUD", signStyle: .automatic))
-                                .font(.title3.monospacedDigit().bold())
-                                .foregroundStyle(net >= 0 ? ScribeTheme.success : ScribeTheme.error)
-                            if group.totalCount > 0 {
-                                Text("\(group.confirmedCount)/\(group.totalCount) confirmed")
-                                    .font(.caption2)
-                                    .foregroundStyle(ScribeTheme.secondaryText)
-                            }
-                        }
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-
-            // Body - collapsible
+        VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
+            header
             if isExpanded {
                 if !group.items.isEmpty {
-                    Divider()
+                    Divider().overlay(ScribeTheme.secondaryText.opacity(0.15))
                 }
 
                 ForEach(group.items) { item in
@@ -94,25 +32,85 @@ struct WeeklyBudgetCard: View {
                 }
 
                 if group.pendingExpenses > 0 {
-                    Divider()
+                    Divider().overlay(ScribeTheme.secondaryText.opacity(0.15))
                     HStack {
                         Text("Remaining")
-                            .font(.subheadline.bold())
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(ScribeTheme.primaryText)
                         Spacer()
                         Text(CurrencyFormatter.format(group.pendingExpenses, currencyCode: "AUD", signStyle: .none))
-                            .font(.subheadline.monospacedDigit().bold())
+                            .font(ScribeDesign.Font.money)
                             .foregroundStyle(ScribeTheme.primaryText)
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 2)
                 }
-
             }
         }
-        .padding()
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
-        .onAppear {
-            isExpanded = isCurrentWeek
+        .scribeCard()
+        .overlay {
+            if isCurrentWeek {
+                RoundedRectangle(cornerRadius: ScribeDesign.Radius.card)
+                    .strokeBorder(ScribeTheme.accent.opacity(0.55), lineWidth: 1.5)
+            }
         }
+        .onAppear { isExpanded = isCurrentWeek }
+    }
+
+    private var header: some View {
+        Button {
+            withAnimation(.snappy) { isExpanded.toggle() }
+        } label: {
+            VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
+                HStack(spacing: ScribeDesign.Spacing.s) {
+                    Text(group.label)
+                        .font(ScribeDesign.Font.cardTitle)
+                        .foregroundStyle(ScribeTheme.primaryText)
+                    if isCurrentWeek {
+                        Text("This week")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(ScribeTheme.accent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(ScribeTheme.accent.opacity(0.16), in: .capsule)
+                    }
+                    Spacer()
+                    if group.totalCount > 0 {
+                        Text("\(group.confirmedCount)/\(group.totalCount)")
+                            .font(.caption.monospacedDigit().weight(.medium))
+                            .foregroundStyle(ScribeTheme.secondaryText)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ScribeTheme.secondaryText)
+                        .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                }
+
+                HStack(alignment: .top, spacing: ScribeDesign.Spacing.m) {
+                    miniStat("Income", group.totalIncome, type: .income, alignment: .leading)
+                    miniStat("Expenses", group.totalExpenses, type: .expense, alignment: .leading)
+                    miniStat(netLabel, net, type: nil, alignment: .trailing)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func miniStat(_ title: String, _ amount: Decimal, type: ItemType?, alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 2) {
+            Text(title)
+                .font(ScribeDesign.Font.label)
+                .foregroundStyle(ScribeTheme.secondaryText)
+                .lineLimit(1)
+            MoneyText(
+                amount: amount,
+                currencyCode: "AUD",
+                type: type,
+                sign: type == nil ? .signed : .unsigned,
+                emphasis: .money
+            )
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+        }
+        .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
     }
 }

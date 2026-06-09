@@ -12,19 +12,28 @@ struct UpcomingExpensesCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Upcoming", systemImage: "clock")
-                .font(.headline)
-                .foregroundStyle(ScribeTheme.primaryText)
+        VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
+            HStack(spacing: ScribeDesign.Spacing.s) {
+                Image(systemName: "clock.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ScribeTheme.accent)
+                Text("Upcoming")
+                    .font(ScribeDesign.Font.cardTitle)
+                    .foregroundStyle(ScribeTheme.primaryText)
+                Spacer(minLength: 0)
+            }
 
             if displayItems.isEmpty {
-                Text("No upcoming items")
+                Text("Nothing due soon")
                     .font(.subheadline)
                     .foregroundStyle(ScribeTheme.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, ScribeDesign.Spacing.s)
             } else {
-                ForEach(displayItems) { item in
+                ForEach(Array(displayItems.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 {
+                        Divider().overlay(ScribeTheme.secondaryText.opacity(0.12))
+                    }
                     UpcomingItemRow(
                         item: item,
                         onConfirm: { onConfirm(item) },
@@ -35,7 +44,6 @@ struct UpcomingExpensesCard: View {
                 }
             }
         }
-        .padding()
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+        .scribeCard()
     }
 }

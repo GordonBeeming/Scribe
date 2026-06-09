@@ -81,7 +81,7 @@ struct BudgetItemDetailView: View {
                                 }
                             }
                             Spacer()
-                            AmountText(
+                            MoneyText(
                                 amount: override_.amount,
                                 currencyCode: item.currencyCode,
                                 type: item.type
@@ -106,7 +106,7 @@ struct BudgetItemDetailView: View {
                         HStack {
                             Text(date, format: .dateTime.weekday(.abbreviated).day().month())
                             Spacer()
-                            AmountText(
+                            MoneyText(
                                 amount: item.effectiveAmount(on: date),
                                 currencyCode: item.currencyCode,
                                 type: item.type

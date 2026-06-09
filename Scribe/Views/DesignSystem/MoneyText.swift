@@ -20,10 +20,18 @@ struct MoneyText: View {
         }
     }
 
+    /// How the +/- prefix is shown. `.auto` derives it from the item type
+    /// (income → +, expense → −, untyped → automatic by value).
+    enum SignMode {
+        case auto
+        case signed     // always show +/- based on value
+        case unsigned   // no sign prefix
+    }
+
     let amount: Decimal
     let currencyCode: String
     var type: ItemType?
-    var signStyle: CurrencyFormatter.SignStyle
+    var sign: SignMode
     var emphasis: Emphasis
     /// When false, the figure uses `primaryText` instead of the income/expense colour.
     var colored: Bool
@@ -32,31 +40,35 @@ struct MoneyText: View {
         amount: Decimal,
         currencyCode: String,
         type: ItemType? = nil,
-        signStyle: CurrencyFormatter.SignStyle? = nil,
+        sign: SignMode = .auto,
         emphasis: Emphasis = .money,
         colored: Bool = true
     ) {
         self.amount = amount
         self.currencyCode = currencyCode
         self.type = type
+        self.sign = sign
         self.emphasis = emphasis
         self.colored = colored
-        // Derive a sensible default sign style from the item type when not given.
-        if let signStyle {
-            self.signStyle = signStyle
-        } else {
-            switch type {
-            case .income: self.signStyle = .alwaysPositive
-            case .expense: self.signStyle = .alwaysNegative
-            case nil: self.signStyle = .automatic
-            }
-        }
     }
 
     var body: some View {
         Text(CurrencyFormatter.format(amount, currencyCode: currencyCode, signStyle: signStyle))
             .font(emphasis.font)
             .foregroundStyle(colored ? color : ScribeTheme.primaryText)
+    }
+
+    private var signStyle: CurrencyFormatter.SignStyle {
+        switch sign {
+        case .signed: return .automatic
+        case .unsigned: return .none
+        case .auto:
+            switch type {
+            case .income: return .alwaysPositive
+            case .expense: return .alwaysNegative
+            case nil: return .automatic
+            }
+        }
     }
 
     private var color: Color {
