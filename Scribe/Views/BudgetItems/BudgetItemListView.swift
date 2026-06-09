@@ -213,13 +213,21 @@ private struct FilterChip: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? ScribeTheme.primaryText : ScribeTheme.secondaryText)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(isSelected ? ScribeTheme.textOnPrimary : ScribeTheme.secondaryText)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(isSelected ? ScribeTheme.accent.opacity(0.25) : Color.clear, in: .capsule)
+                // Flat capsules: the selected chip fills with the brand colour, and
+                // unselected chips get a faint surface. Glass on chips this small just
+                // stacked tiny shadows.
+                .background(
+                    isSelected ? ScribeTheme.primary : ScribeTheme.surface.opacity(0.65),
+                    in: .capsule
+                )
         }
-        .glassEffect(.regular.interactive(), in: .capsule)
+        // .borderless keeps native tap-dim feedback without the List row
+        // intercepting the tap; the Text sets its own colours so it isn't tinted.
+        .buttonStyle(.borderless)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
