@@ -93,6 +93,7 @@ struct DataManagementSection: View {
                 Text("Merge will update existing records and add new ones. Replace will clear all current data first.")
             }
         }
+        .scribeSection()
         .alert("Success", isPresented: $showSuccessAlert) {
             Button("OK") {}
         } message: {

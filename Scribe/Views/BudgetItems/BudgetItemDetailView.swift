@@ -7,8 +7,42 @@ struct BudgetItemDetailView: View {
     @State private var showingEditSheet = false
     @State private var showingOverrideSheet = false
 
+    private var avatarTint: Color {
+        item.type == .income ? ScribeTheme.success : ScribeTheme.primary
+    }
+
     var body: some View {
         List {
+            Section {
+                HStack(spacing: ScribeDesign.Spacing.l) {
+                    ZStack {
+                        Circle()
+                            .fill(avatarTint.opacity(0.18))
+                            .frame(width: 52, height: 52)
+                        Image(systemName: item.category.systemImage)
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(avatarTint)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.category.displayName)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(ScribeTheme.secondaryText)
+                        Text(item.frequency.displayName)
+                            .font(.caption)
+                            .foregroundStyle(ScribeTheme.secondaryText)
+                    }
+                    Spacer(minLength: ScribeDesign.Spacing.s)
+                    MoneyText(
+                        amount: item.amount,
+                        currencyCode: item.currencyCode,
+                        type: item.type,
+                        emphasis: .metric
+                    )
+                }
+                .padding(.vertical, ScribeDesign.Spacing.xs)
+                .listRowBackground(Color.clear)
+            }
+
             Section("Details") {
                 LabeledContent("Type", value: item.type.displayName)
                 LabeledContent("Amount") {
@@ -39,6 +73,7 @@ struct BudgetItemDetailView: View {
                     LabeledContent("Notes", value: notes)
                 }
             }
+            .listRowBackground(ScribeTheme.surface.opacity(0.55))
 
             if item.type == .income {
                 Section("Income Settings") {
@@ -61,6 +96,7 @@ struct BudgetItemDetailView: View {
                     }
                     LabeledContent("Show Last in Day", value: item.showLast ? "Yes" : "No")
                 }
+                .listRowBackground(ScribeTheme.surface.opacity(0.55))
             }
 
             Section("Amount History") {
@@ -81,7 +117,7 @@ struct BudgetItemDetailView: View {
                                 }
                             }
                             Spacer()
-                            AmountText(
+                            MoneyText(
                                 amount: override_.amount,
                                 currencyCode: item.currencyCode,
                                 type: item.type
@@ -96,6 +132,7 @@ struct BudgetItemDetailView: View {
                     Label("Add Amount Change", systemImage: "plus.circle")
                 }
             }
+            .listRowBackground(ScribeTheme.surface.opacity(0.55))
 
             Section("Upcoming Occurrences") {
                 let calendar = Calendar.current
@@ -106,7 +143,7 @@ struct BudgetItemDetailView: View {
                         HStack {
                             Text(date, format: .dateTime.weekday(.abbreviated).day().month())
                             Spacer()
-                            AmountText(
+                            MoneyText(
                                 amount: item.effectiveAmount(on: date),
                                 currencyCode: item.currencyCode,
                                 type: item.type
@@ -116,7 +153,9 @@ struct BudgetItemDetailView: View {
                     }
                 }
             }
+            .listRowBackground(ScribeTheme.surface.opacity(0.55))
         }
+        .scribeScreen()
         .navigationTitle(item.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -151,11 +190,13 @@ private struct AddOverrideSheet: View {
                 Section("Effective Date") {
                     DatePicker("From", selection: $effectiveDate, displayedComponents: .date)
                 }
+                .scribeSection()
 
                 Section("New Amount") {
                     TextField("Amount", text: $amount)
                         .keyboardType(.decimalPad)
                 }
+                .scribeSection()
 
                 if item.frequency == .monthly {
                     Section("Schedule Change") {
@@ -164,12 +205,15 @@ private struct AddOverrideSheet: View {
                             Stepper("Day: \(newDayOfMonth)", value: $newDayOfMonth, in: 1...31)
                         }
                     }
+                    .scribeSection()
                 }
 
                 Section {
                     TextField("Notes (optional)", text: $notes)
                 }
+                .scribeSection()
             }
+            .scribeScreen()
             .navigationTitle("Change Going Forward")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

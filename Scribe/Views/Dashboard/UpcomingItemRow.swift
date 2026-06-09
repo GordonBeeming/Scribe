@@ -37,71 +37,99 @@ struct UpcomingItemRow: View {
         item.budgetItem.type == .income
     }
 
-    private var confirmIconName: String {
+    // MARK: - Avatar / confirm affordance
+
+    /// The category tint — income reads as success-green, expenses as the adaptive
+    /// brand indigo (the periwinkle accent is too low-contrast on light glass).
+    private var categoryTint: Color {
+        isIncome ? ScribeTheme.success : ScribeTheme.primary
+    }
+
+    private var avatarIcon: String {
+        if item.isConfirmed { return isIncome ? "arrow.down" : "checkmark" }
+        if item.isSkipped { return "arrow.uturn.right" }
+        return item.budgetItem.category.systemImage
+    }
+
+    private var avatarFill: Color {
+        if item.isConfirmed { return ScribeTheme.success }
+        if item.isSkipped { return ScribeTheme.secondaryText.opacity(0.15) }
+        return categoryTint.opacity(0.18)
+    }
+
+    private var avatarForeground: Color {
+        if item.isConfirmed { return ScribeTheme.textOnPrimary }
+        if item.isSkipped { return ScribeTheme.secondaryText }
+        return categoryTint
+    }
+
+    private var confirmAccessibilityLabel: String {
         if isIncome {
-            return item.isConfirmed ? "arrow.down.circle.fill" : "arrow.down.circle"
-        } else {
-            return item.isConfirmed ? "checkmark.circle.fill" : "circle"
+            return item.isConfirmed ? "Undo received" : "Mark as received"
         }
+        return item.isConfirmed ? "Undo paid" : "Mark as paid"
     }
 
     var body: some View {
-        HStack {
+        HStack(spacing: ScribeDesign.Spacing.m) {
             Button(action: onConfirm) {
-                Image(systemName: confirmIconName)
-                    .foregroundStyle(item.isConfirmed ? ScribeTheme.success : ScribeTheme.secondaryText)
-                    .imageScale(.large)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
+                ZStack {
+                    Circle()
+                        .fill(avatarFill)
+                        .frame(width: 40, height: 40)
+                    Image(systemName: avatarIcon)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(avatarForeground)
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isIncome
-                ? (item.isConfirmed ? "Undo received" : "Mark as received")
-                : (item.isConfirmed ? "Undo paid" : "Mark as paid")
-            )
+            .accessibilityLabel(confirmAccessibilityLabel)
 
-            HStack {
-                VStack(alignment: .leading) {
-                    Text(item.budgetItem.name)
-                        .font(.subheadline)
-                        .strikethrough(item.isConfirmed)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.budgetItem.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(ScribeTheme.primaryText)
+                    .strikethrough(item.isConfirmed || item.isSkipped)
+                    .lineLimit(1)
 
-                    Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
-                        .font(.caption)
-                        .foregroundStyle(isOverdue ? .orange : ScribeTheme.secondaryText)
-                }
-
-                Spacer()
-
-                amountDisplay
+                Text(item.dueDate, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
+                    .font(.caption)
+                    .foregroundStyle(isOverdue ? .orange : ScribeTheme.secondaryText)
             }
-            .contentShape(Rectangle())
-            .onTapGesture { onTap?() }
-            .contextMenu {
+
+            Spacer(minLength: ScribeDesign.Spacing.s)
+
+            amountDisplay
+        }
+        .opacity(item.isSkipped ? 0.55 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture { onTap?() }
+        .contextMenu {
+            if item.isConfirmed {
+                Button {
+                    editAmountText = "\(displayAmount)"
+                    showingAmountEditor = true
+                } label: {
+                    Label("Edit Amount", systemImage: "pencil")
+                }
+            }
+
+            Button {
+                onConfirm()
+            } label: {
                 if item.isConfirmed {
-                    Button {
-                        editAmountText = "\(displayAmount)"
-                        showingAmountEditor = true
-                    } label: {
-                        Label("Edit Amount", systemImage: "pencil")
-                    }
+                    Label(isIncome ? "Undo Received" : "Undo Paid", systemImage: "arrow.uturn.backward")
+                } else {
+                    Label(isIncome ? "Mark as Received" : "Mark as Paid", systemImage: "checkmark.circle")
                 }
+            }
 
-                Button {
-                    onConfirm()
-                } label: {
-                    if item.isConfirmed {
-                        Label(isIncome ? "Undo Received" : "Undo Paid", systemImage: "arrow.uturn.backward")
-                    } else {
-                        Label(isIncome ? "Mark as Received" : "Mark as Paid", systemImage: "checkmark.circle")
-                    }
-                }
-
-                Button {
-                    onSkip()
-                } label: {
-                    Label(item.isSkipped ? "Undo Skip" : "Skip", systemImage: "arrow.uturn.right")
-                }
+            Button {
+                onSkip()
+            } label: {
+                Label(item.isSkipped ? "Undo Skip" : "Skip", systemImage: "arrow.uturn.right")
             }
         }
         .popover(isPresented: $showingAmountEditor) {
@@ -112,29 +140,27 @@ struct UpcomingItemRow: View {
     private var amountDisplay: some View {
         VStack(alignment: .trailing, spacing: 2) {
             if isForeignCurrency, let converted = convertedAmount {
-                // Show converted base currency amount with * to indicate estimate
-                HStack(spacing: 0) {
+                HStack(spacing: 1) {
                     Text("*")
                         .foregroundStyle(ScribeTheme.secondaryText)
-                    AmountText(
+                    MoneyText(
                         amount: converted,
                         currencyCode: exchangeRateCache.baseCurrency,
-                        type: item.budgetItem.type
+                        type: item.budgetItem.type,
+                        emphasis: .money
                     )
                 }
-                .font(.subheadline.monospacedDigit())
 
-                // Show original foreign amount as "USD 10.00"
                 Text("\(item.budgetItem.currencyCode) \(CurrencyFormatter.formatNumber(displayAmount))")
-                    .font(.caption2)
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(ScribeTheme.secondaryText)
             } else {
-                AmountText(
+                MoneyText(
                     amount: displayAmount,
                     currencyCode: item.budgetItem.currencyCode,
-                    type: item.budgetItem.type
+                    type: item.budgetItem.type,
+                    emphasis: .money
                 )
-                .font(.subheadline.monospacedDigit())
             }
 
             if hasAmountAdjustment {

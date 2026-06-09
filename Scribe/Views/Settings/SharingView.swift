@@ -11,6 +11,7 @@ struct SharingView: View {
                 Text("Family sharing lets you share your budget with family members via iCloud. Everyone with access can view and confirm expenses.")
                     .foregroundStyle(ScribeTheme.secondaryText)
             }
+            .scribeSection()
 
             Section("Share Budget") {
                 Button {
@@ -27,6 +28,7 @@ struct SharingView: View {
                     }
                 }
             }
+            .scribeSection()
 
             Section("Participants") {
                 let participants = ShareManager.shared.participants
@@ -57,6 +59,7 @@ struct SharingView: View {
                     }
                 }
             }
+            .scribeSection()
 
             if let errorMessage {
                 Section {
@@ -64,8 +67,10 @@ struct SharingView: View {
                         .foregroundStyle(ScribeTheme.error)
                         .font(.caption)
                 }
+                .scribeSection()
             }
         }
+        .scribeScreen()
         .navigationTitle("Family Sharing")
         .onAppear {
             Task {

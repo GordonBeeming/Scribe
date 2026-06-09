@@ -59,7 +59,9 @@ struct DashboardSectionsView: View {
                     SyncCoordinator.shared.pushDeletion(for: id)
                 }
             }
+            .listRowBackground(ScribeTheme.surface.opacity(0.55))
         }
+        .scribeScreen()
         .navigationTitle("Dashboard Sections")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -105,6 +107,7 @@ struct DashboardSectionAddView: View {
                 Section("Label") {
                     TextField("Section name", text: $label)
                 }
+                .scribeSection()
 
                 Section("Type") {
                     Picker("Section Type", selection: $sectionType) {
@@ -113,6 +116,7 @@ struct DashboardSectionAddView: View {
                         }
                     }
                 }
+                .scribeSection()
 
                 Section("Anchor") {
                     Picker("Anchor Type", selection: $anchorMode) {
@@ -152,7 +156,9 @@ struct DashboardSectionAddView: View {
                         }
                     }
                 }
+                .scribeSection()
             }
+            .scribeScreen()
             .navigationTitle("Add Section")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -214,6 +220,7 @@ struct DashboardSectionEditView: View {
             Section("Label") {
                 TextField("Section name", text: $label)
             }
+            .scribeSection()
 
             Section("Type") {
                 Picker("Section Type", selection: $sectionType) {
@@ -222,6 +229,7 @@ struct DashboardSectionEditView: View {
                     }
                 }
             }
+            .scribeSection()
 
             Section("Anchor") {
                 Picker("Anchor Type", selection: $anchorMode) {
@@ -261,6 +269,7 @@ struct DashboardSectionEditView: View {
                     }
                 }
             }
+            .scribeSection()
 
             Section {
                 Toggle("Enabled", isOn: Binding(
@@ -273,7 +282,9 @@ struct DashboardSectionEditView: View {
                     }
                 ))
             }
+            .scribeSection()
         }
+        .scribeScreen()
         .navigationTitle("Edit Section")
         .onAppear {
             label = section.label

@@ -29,81 +29,18 @@ struct DashboardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                if allItems.isEmpty {
-                    emptyState
-                } else {
-                    let enabledSections = dashboardSections.filter(\.isEnabled)
-                    if enabledSections.isEmpty {
-                        VStack(spacing: 16) {
-                            PeriodSummaryCard(
-                                budgetItems: activeItems,
-                                occurrences: occurrences
-                            )
-
-                            UpcomingExpensesCard(
-                                items: viewModel.upcomingItems(
-                                    budgetItems: activeItems,
-                                    occurrences: occurrences,
-                                    lookbackDays: lookbackDays
-                                ),
-                                onConfirm: confirmOccurrence,
-                                onSkip: skipOccurrence,
-                                onTap: { selectedItem = $0.budgetItem },
-                                onAdjustAmount: adjustAmount
-                            )
-                        }
-                        .padding()
+                Group {
+                    if allItems.isEmpty {
+                        emptyState
                     } else {
-                        VStack(spacing: 16) {
-                            ForEach(enabledSections) { section in
-                                switch section.sectionType {
-                                case .monthlySummary:
-                                    MonthlySummaryCard(
-                                        summary: viewModel.monthlySummary(
-                                            budgetItems: activeItems,
-                                            occurrences: occurrences,
-                                            anchor: section.anchor,
-                                            holidays: holidays,
-                                            exchangeRates: ExchangeRateCache.shared.rates,
-                                            baseCurrency: ExchangeRateCache.shared.baseCurrency
-                                        )
-                                    )
-                                case .detailedWeekly:
-                                    let groups = viewModel.weeklyGroups(
-                                        budgetItems: activeItems,
-                                        occurrences: occurrences,
-                                        anchor: section.anchor,
-                                        range: SettingsViewModel.currentDefaultRange(),
-                                        holidays: holidays,
-                                        exchangeRates: ExchangeRateCache.shared.rates,
-                                        baseCurrency: ExchangeRateCache.shared.baseCurrency,
-                                        rollingNet: SettingsViewModel.currentRollingWeeklyNet()
-                                    )
-                                    VStack(spacing: 12) {
-                                        Text(section.label)
-                                            .font(.title3.bold())
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                        ForEach(groups) { group in
-                                            let calendar = Calendar.current
-                                            let today = calendar.startOfDay(for: Date())
-                                            let isCurrent = group.startDate <= today && group.endDate >= today
-                                            WeeklyBudgetCard(
-                                                group: group,
-                                                onConfirm: confirmOccurrence,
-                                                onSkip: skipOccurrence,
-                                                onTap: { selectedItem = $0.budgetItem },
-                                                onAdjustAmount: adjustAmount,
-                                                isCurrentWeek: isCurrent
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .padding()
+                        dashboardContent
                     }
                 }
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
+                .padding()
             }
+            .scribeScreen()
             .task {
                 dashboardLogger.info("DashboardView appeared: \(dashboardSections.count) sections, \(dashboardSections.filter(\.isEnabled).count) enabled")
                 await loadHolidays()
@@ -119,6 +56,87 @@ struct DashboardView: View {
             .sheet(item: $irregularConfirmItem) { upcomingItem in
                 NextDatePickerSheet(itemName: upcomingItem.budgetItem.name) { nextDate in
                     scheduleNextIrregular(upcomingItem, nextDate: nextDate)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var dashboardContent: some View {
+        let enabledSections = dashboardSections.filter(\.isEnabled)
+        GlassEffectContainer(spacing: ScribeDesign.Spacing.l) {
+            if enabledSections.isEmpty {
+                VStack(spacing: ScribeDesign.Spacing.l) {
+                    PeriodSummaryCard(
+                        budgetItems: activeItems,
+                        occurrences: occurrences
+                    )
+                    UpcomingExpensesCard(
+                        items: viewModel.upcomingItems(
+                            budgetItems: activeItems,
+                            occurrences: occurrences,
+                            lookbackDays: lookbackDays
+                        ),
+                        onConfirm: confirmOccurrence,
+                        onSkip: skipOccurrence,
+                        onTap: { selectedItem = $0.budgetItem },
+                        onAdjustAmount: adjustAmount
+                    )
+                }
+            } else {
+                VStack(spacing: ScribeDesign.Spacing.xxl) {
+                    ForEach(enabledSections) { section in
+                        sectionView(section)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionView(_ section: DashboardSection) -> some View {
+        switch section.sectionType {
+        case .monthlySummary:
+            MonthlySummaryCard(
+                summary: viewModel.monthlySummary(
+                    budgetItems: activeItems,
+                    occurrences: occurrences,
+                    anchor: section.anchor,
+                    holidays: holidays,
+                    exchangeRates: ExchangeRateCache.shared.rates,
+                    baseCurrency: ExchangeRateCache.shared.baseCurrency
+                )
+            )
+        case .detailedWeekly:
+            let groups = viewModel.weeklyGroups(
+                budgetItems: activeItems,
+                occurrences: occurrences,
+                anchor: section.anchor,
+                range: SettingsViewModel.currentDefaultRange(),
+                holidays: holidays,
+                exchangeRates: ExchangeRateCache.shared.rates,
+                baseCurrency: ExchangeRateCache.shared.baseCurrency,
+                rollingNet: SettingsViewModel.currentRollingWeeklyNet()
+            )
+            let calendar = Calendar.current
+            let today = calendar.startOfDay(for: Date())
+            VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
+                ScribeSectionHeader(section.label, systemImage: "calendar.day.timeline.left")
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 340), spacing: ScribeDesign.Spacing.l)],
+                    alignment: .leading,
+                    spacing: ScribeDesign.Spacing.l
+                ) {
+                    ForEach(groups) { group in
+                        WeeklyBudgetCard(
+                            group: group,
+                            onConfirm: confirmOccurrence,
+                            onSkip: skipOccurrence,
+                            onTap: { selectedItem = $0.budgetItem },
+                            onAdjustAmount: adjustAmount,
+                            isCurrentWeek: group.startDate <= today && group.endDate >= today
+                        )
+                    }
                 }
             }
         }

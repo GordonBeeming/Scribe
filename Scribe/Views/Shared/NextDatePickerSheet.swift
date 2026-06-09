@@ -16,10 +16,12 @@ struct NextDatePickerSheet: View {
                     Text("When is the next \(itemName)?")
                         .foregroundStyle(ScribeTheme.secondaryText)
                 }
+                .scribeSection()
 
                 Section {
                     Toggle("One-time payment (won't occur again)", isOn: $isOneTime)
                 }
+                .scribeSection()
 
                 if !isOneTime {
                     Section("Next Date") {
@@ -30,8 +32,10 @@ struct NextDatePickerSheet: View {
                             displayedComponents: [.date]
                         )
                     }
+                    .scribeSection()
                 }
             }
+            .scribeScreen()
             .navigationTitle("Schedule Next")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
