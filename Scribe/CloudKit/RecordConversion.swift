@@ -10,17 +10,22 @@ enum RecordConversion {
     static let dashboardSectionRecordType = "DashboardSection"
     static let userPreferencesRecordType = "UserPreferences"
 
-    // MARK: - CKRecord System Fields
+    // MARK: - Cached CKRecord
 
-    /// Encode a CKRecord's system fields (change tag, etc.) to Data for local storage.
-    static func encodeSystemFields(of record: CKRecord) -> Data {
+    /// Archive a whole CKRecord — system fields *and* field values — for local storage in
+    /// `ckRecordData`. The cached record is this device's last-synced ancestor, so a later
+    /// conflict can be merged per field instead of one copy overwriting the other, and CKRecord
+    /// only puts the keys the model actually changed on the wire.
+    static func encodeRecord(_ record: CKRecord) -> Data {
         let coder = NSKeyedArchiver(requiringSecureCoding: true)
-        record.encodeSystemFields(with: coder)
+        record.encode(with: coder)
         coder.finishEncoding()
         return coder.encodedData
     }
 
-    /// Restore a CKRecord from previously archived system fields.
+    /// Restore the last-synced CKRecord from `ckRecordData`.
+    /// Caches written by this build carry field values; caches written before it are
+    /// system-fields-only, which the merge treats as having no ancestor.
     /// Returns nil if data is invalid, in which case a fresh record should be created.
     static func decodeLastKnownRecord(from data: Data) -> CKRecord? {
         guard let coder = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
@@ -31,7 +36,8 @@ enum RecordConversion {
     }
 
     /// Get or create a CKRecord for a model object. Reuses the last known record
-    /// (preserving system fields) if available, otherwise creates a fresh one.
+    /// (system fields and the values this device last synced) if available, otherwise
+    /// creates a fresh one.
     private static func recordForModel(
         recordType: String,
         id: UUID,
@@ -133,7 +139,7 @@ enum RecordConversion {
         item.payDayAdjustmentDays = record["payDayAdjustmentDays"] as? String
         item.publicHolidayCountryCode = record["publicHolidayCountryCode"] as? String
         item.endDate = record["endDate"] as? Date
-        item.ckRecordData = encodeSystemFields(of: record)
+        item.ckRecordData = encodeRecord(record)
     }
 
     // MARK: - AmountOverride -> CKRecord
@@ -183,7 +189,7 @@ enum RecordConversion {
         override_.overrideReferenceDate = record["overrideReferenceDate"] as? Date
         override_.notes = record["notes"] as? String
         override_.modifiedAt = record["modifiedAt"] as? Date ?? Date()
-        override_.ckRecordData = encodeSystemFields(of: record)
+        override_.ckRecordData = encodeRecord(record)
     }
 
     // MARK: - Occurrence -> CKRecord
@@ -239,7 +245,7 @@ enum RecordConversion {
         occurrence.confirmedAt = record["confirmedAt"] as? Date
         occurrence.notes = record["notes"] as? String
         occurrence.modifiedAt = record["modifiedAt"] as? Date ?? Date()
-        occurrence.ckRecordData = encodeSystemFields(of: record)
+        occurrence.ckRecordData = encodeRecord(record)
     }
 
     // MARK: - FamilyMember -> CKRecord
@@ -262,7 +268,7 @@ enum RecordConversion {
         member.name = record["name"] as? String ?? member.name
         member.sortOrder = record["sortOrder"] as? Int ?? member.sortOrder
         member.modifiedAt = record["modifiedAt"] as? Date ?? Date()
-        member.ckRecordData = encodeSystemFields(of: record)
+        member.ckRecordData = encodeRecord(record)
     }
 
     // MARK: - DashboardSection -> CKRecord
@@ -291,7 +297,7 @@ enum RecordConversion {
         section.sortOrder = record["sortOrder"] as? Int ?? section.sortOrder
         section.label = record["label"] as? String ?? section.label
         section.modifiedAt = record["modifiedAt"] as? Date ?? Date()
-        section.ckRecordData = encodeSystemFields(of: record)
+        section.ckRecordData = encodeRecord(record)
     }
 
     // MARK: - UserPreferences -> CKRecord
@@ -321,7 +327,7 @@ enum RecordConversion {
             preferences.rollingWeeklyNet = rolling == 1
         }
         preferences.modifiedAt = record["modifiedAt"] as? Date ?? Date()
-        preferences.ckRecordData = encodeSystemFields(of: record)
+        preferences.ckRecordData = encodeRecord(record)
         preferences.syncToUserDefaults()
     }
 }

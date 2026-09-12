@@ -23,13 +23,13 @@ struct ScribeApp: App {
                         vm.ensureDefaultDashboardSectionsExist()
                         // Backfill baseline overrides for items created before
                         // amount history was tracked from day one, then bring
-                        // every item's headline amount up to date.
+                        // every item's headline amount up to date. The refreshed
+                        // amount is derived state that every device recomputes,
+                        // so it is not pushed; pushing it made a stale device
+                        // overwrite the other member's real edits.
                         let context = SharedModelContainer.shared.mainContext
                         BudgetItemAmountRefresher.backfillBaselineOverrides(in: context)
-                        let changed = BudgetItemAmountRefresher.refreshAll(in: context)
-                        for id in changed {
-                            SyncCoordinator.shared.pushChange(for: id)
-                        }
+                        BudgetItemAmountRefresher.refreshAll(in: context)
                     }
                 }
         }
@@ -39,10 +39,11 @@ struct ScribeApp: App {
             case .active:
                 if !isTestEnvironment {
                     let context = SharedModelContainer.shared.mainContext
-                    let changed = BudgetItemAmountRefresher.refreshAll(in: context)
-                    for id in changed {
-                        SyncCoordinator.shared.pushChange(for: id)
-                    }
+                    BudgetItemAmountRefresher.refreshAll(in: context)
+                    // Silent pushes are best-effort, so a foreground is the one
+                    // moment we know the user is looking and can ask for the
+                    // other member's changes explicitly.
+                    SyncCoordinator.shared.fetchAllChanges()
                 }
             case .background:
                 WidgetCenter.shared.reloadAllTimelines()

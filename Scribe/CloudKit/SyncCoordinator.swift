@@ -19,6 +19,41 @@ final class SyncCoordinator: @unchecked Sendable {
     private let sharedStateKey = "sharedSyncEngineState"
     private let zoneName = "ScribeBudgetZone"
 
+    /// Settings that belong to one iCloud account rather than to the shared budget. They use
+    /// fixed UUIDs, so letting them travel through the share makes both family members fight
+    /// over the same record names.
+    private static let perUserRecordTypes: Set<String> = [
+        RecordConversion.userPreferencesRecordType,
+        RecordConversion.dashboardSectionRecordType
+    ]
+
+    /// A push queued before the engines existed. `start(with:)` builds them asynchronously
+    /// after an account-status check, so without this buffer every launch-time push is added
+    /// to a nil engine and silently lost.
+    private struct DeferredChange {
+        enum Target {
+            case privateDatabase
+            case sharedDatabase
+        }
+
+        let target: Target
+        let change: CKSyncEngine.PendingRecordZoneChange
+    }
+
+    /// Guards the buffer *and* the two engine properties. Both have to move under one lock:
+    /// otherwise a push can read a nil engine, lose the race to the drain, and leave its change
+    /// buffered until the next launch.
+    private let deferredChangesLock = NSLock()
+    private var deferredChanges: [DeferredChange] = []
+
+    /// The fixed UUIDs every device seeds per-user settings with. They are the only per-user
+    /// records identifiable from a record name alone.
+    private static let wellKnownPerUserIDs: Set<UUID> = [
+        UserPreferences.sharedID,
+        DashboardSection.defaultSummaryID,
+        DashboardSection.defaultUpcomingID
+    ]
+
     private var zoneID: CKRecordZone.ID {
         CKRecordZone.ID(zoneName: zoneName, ownerName: CKCurrentUserDefaultName)
     }
@@ -36,6 +71,15 @@ final class SyncCoordinator: @unchecked Sendable {
             return false
         }
         return record.recordID.zoneID.ownerName != CKCurrentUserDefaultName
+    }
+
+    /// Whether cached ckRecordData describes one of the per-user settings records.
+    private func isPerUserRecord(_ ckRecordData: Data?) -> Bool {
+        guard let data = ckRecordData,
+              let record = RecordConversion.decodeLastKnownRecord(from: data) else {
+            return false
+        }
+        return Self.perUserRecordTypes.contains(record.recordType)
     }
 
     /// Extract the CKRecordZone.ID from cached ckRecordData. Returns nil if data is absent or invalid.
@@ -89,20 +133,8 @@ final class SyncCoordinator: @unchecked Sendable {
             }
             return nil
         }
-        // Check DashboardSection
-        if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == id })).first {
-            if let z = zoneIDFromRecordData(section.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
-                return z
-            }
-            return nil
-        }
-        // Check UserPreferences
-        if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == id })).first {
-            if let z = zoneIDFromRecordData(preferences.ckRecordData), z.ownerName != CKCurrentUserDefaultName {
-                return z
-            }
-            return nil
-        }
+        // DashboardSection and UserPreferences are per-user settings: always this account's own,
+        // whatever a hijacked cache says about their zone.
         return nil
     }
 
@@ -156,6 +188,8 @@ final class SyncCoordinator: @unchecked Sendable {
             return
         }
 
+        reclaimPerUserRecords()
+
         Task {
             do {
                 let status = try await CloudKitManager.shared.checkAccountStatus()
@@ -178,7 +212,6 @@ final class SyncCoordinator: @unchecked Sendable {
                     delegate: self
                 )
                 let engine = CKSyncEngine(configuration)
-                self.syncEngine = engine
 
                 // Ensure our zone exists via the engine's pending database changes
                 engine.state.add(pendingDatabaseChanges: [
@@ -192,7 +225,8 @@ final class SyncCoordinator: @unchecked Sendable {
                     delegate: self
                 )
                 let sharedEngine = CKSyncEngine(sharedConfig)
-                self.sharedSyncEngine = sharedEngine
+
+                self.publishEngines(private: engine, shared: sharedEngine)
 
                 // Engines now exist — run a resync re-upload if one was requested.
                 // forceFullResync() can't push directly because we get here async.
@@ -211,9 +245,13 @@ final class SyncCoordinator: @unchecked Sendable {
         }
     }
 
+    /// Drops both engines. The buffer is deliberately left alone, so a forceFullResync() cycle
+    /// keeps whatever was queued and the restart drains it.
     func stop() {
+        deferredChangesLock.lock()
         syncEngine = nil
         sharedSyncEngine = nil
+        deferredChangesLock.unlock()
     }
 
     /// Trigger an immediate fetch on the shared database engine (e.g. after accepting a share)
@@ -238,26 +276,94 @@ final class SyncCoordinator: @unchecked Sendable {
         }
     }
 
+    /// Fetch immediately on every running engine. The sync engine's own fetch schedule is
+    /// documented as indeterminate, so an app that only ever waits can show minutes-old data
+    /// after coming to the foreground.
+    func fetchAllChanges() {
+        var engines: [(label: String, engine: CKSyncEngine)] = []
+        if let syncEngine { engines.append(("private", syncEngine)) }
+        if let sharedSyncEngine { engines.append(("shared", sharedSyncEngine)) }
+
+        guard !engines.isEmpty else {
+            logger.debug("Cannot fetch changes: sync engines not started")
+            return
+        }
+
+        // Detached so the fetch never inherits the caller's executor. Calling fetchChanges on
+        // the engine's own serial delegate executor trips its re-entrancy guard and traps.
+        Task.detached { [engines, logger] in
+            for entry in engines {
+                do {
+                    try await entry.engine.fetchChanges(CKSyncEngine.FetchChangesOptions())
+                    logger.info("[\(entry.label)] Foreground fetch completed")
+                } catch {
+                    logger.error("[\(entry.label)] Foreground fetch failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     // MARK: - Push local changes
 
+    /// Add pending changes to an engine, or buffer them when that engine doesn't exist yet.
+    ///
+    /// Reading the engine and appending to the buffer are one critical section. Split apart, a
+    /// caller that sees a nil engine can be overtaken by `publishEngines(...)` draining the
+    /// buffer, and its append then sits there unseen until the next launch.
+    private func enqueue(_ changes: [CKSyncEngine.PendingRecordZoneChange], to target: DeferredChange.Target) {
+        guard !changes.isEmpty else { return }
+        let label = target == .privateDatabase ? "private" : "shared"
+
+        deferredChangesLock.lock()
+        guard let engine = target == .privateDatabase ? syncEngine : sharedSyncEngine else {
+            deferredChanges.append(contentsOf: changes.map { DeferredChange(target: target, change: $0) })
+            let buffered = deferredChanges.count
+            deferredChangesLock.unlock()
+            logger.info("Deferred \(changes.count) change(s) for the \(label) engine until it starts (\(buffered) buffered)")
+            return
+        }
+        deferredChangesLock.unlock()
+
+        engine.state.add(pendingRecordZoneChanges: changes)
+    }
+
+    /// Publish both engines and take the buffer in one lock hold, then hand the buffered work
+    /// over. Publication and the drain have to be atomic against `enqueue` for the same reason
+    /// the read and the append are.
+    private func publishEngines(private privateEngine: CKSyncEngine, shared sharedEngine: CKSyncEngine) {
+        deferredChangesLock.lock()
+        syncEngine = privateEngine
+        sharedSyncEngine = sharedEngine
+        let buffered = deferredChanges
+        deferredChanges.removeAll()
+        deferredChangesLock.unlock()
+
+        guard !buffered.isEmpty else { return }
+        let privateChanges = buffered.filter { $0.target == .privateDatabase }.map(\.change)
+        let sharedChanges = buffered.filter { $0.target == .sharedDatabase }.map(\.change)
+        if !privateChanges.isEmpty {
+            privateEngine.state.add(pendingRecordZoneChanges: privateChanges)
+        }
+        if !sharedChanges.isEmpty {
+            sharedEngine.state.add(pendingRecordZoneChanges: sharedChanges)
+        }
+        logger.info("Drained deferred changes: \(privateChanges.count) private, \(sharedChanges.count) shared")
+    }
+
     func pushChanges(for recordIDs: [CKRecord.ID]) {
-        let changes = recordIDs.map { CKSyncEngine.PendingRecordZoneChange.saveRecord($0) }
-        syncEngine?.state.add(pendingRecordZoneChanges: changes)
+        enqueue(recordIDs.map { .saveRecord($0) }, to: .privateDatabase)
     }
 
     func pushSharedChanges(for recordIDs: [CKRecord.ID]) {
-        let changes = recordIDs.map { CKSyncEngine.PendingRecordZoneChange.saveRecord($0) }
-        sharedSyncEngine?.state.add(pendingRecordZoneChanges: changes)
+        enqueue(recordIDs.map { .saveRecord($0) }, to: .sharedDatabase)
     }
 
     func pushDeletion(for recordIDs: [CKRecord.ID]) {
-        let changes = recordIDs.map { CKSyncEngine.PendingRecordZoneChange.deleteRecord($0) }
-        syncEngine?.state.add(pendingRecordZoneChanges: changes)
+        enqueue(recordIDs.map { .deleteRecord($0) }, to: .privateDatabase)
     }
 
     func pushSharedDeletion(for recordIDs: [CKRecord.ID]) {
-        let changes = recordIDs.map { CKSyncEngine.PendingRecordZoneChange.deleteRecord($0) }
-        sharedSyncEngine?.state.add(pendingRecordZoneChanges: changes)
+        enqueue(recordIDs.map { .deleteRecord($0) }, to: .sharedDatabase)
     }
 
     /// Push a single model object by its UUID, routing to the correct engine (private or shared).
@@ -303,6 +409,9 @@ final class SyncCoordinator: @unchecked Sendable {
 
     /// Determine shared zone from already-available ckRecordData, avoiding a DB fetch.
     private func sharedZoneFromCKData(_ ckRecordData: Data?, parentCKRecordData: Data? = nil) -> CKRecordZone.ID? {
+        // Per-user settings stay in this account's own zone even when their cached record was
+        // overwritten with the other family member's zone.
+        if isPerUserRecord(ckRecordData) { return nil }
         if let z = zoneIDFromRecordData(ckRecordData), z.ownerName != CKCurrentUserDefaultName {
             return z
         }
@@ -327,8 +436,11 @@ final class SyncCoordinator: @unchecked Sendable {
         var sharedRecordIDs: [CKRecord.ID] = []
 
         /// Classify a record as owned or shared based on its ckRecordData (or parent's for child records).
-        func classify(id: UUID, ckRecordData: Data?, parentCKRecordData: Data? = nil) {
-            if let sharedZone = zoneIDFromRecordData(ckRecordData),
+        /// Per-user settings are always owned, whatever their cached zone says.
+        func classify(id: UUID, ckRecordData: Data?, parentCKRecordData: Data? = nil, isPerUser: Bool = false) {
+            if isPerUser {
+                ownedRecordIDs.append(CKRecord.ID(recordName: id.uuidString, zoneID: zoneID))
+            } else if let sharedZone = zoneIDFromRecordData(ckRecordData),
                sharedZone.ownerName != CKCurrentUserDefaultName {
                 sharedRecordIDs.append(CKRecord.ID(recordName: id.uuidString, zoneID: sharedZone))
             } else if let parentData = parentCKRecordData,
@@ -357,10 +469,10 @@ final class SyncCoordinator: @unchecked Sendable {
             for member in members { classify(id: member.id, ckRecordData: member.ckRecordData) }
         }
         if let sections = try? bgContext.fetch(FetchDescriptor<DashboardSection>()) {
-            for section in sections { classify(id: section.id, ckRecordData: section.ckRecordData) }
+            for section in sections { classify(id: section.id, ckRecordData: section.ckRecordData, isPerUser: true) }
         }
         if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>()) {
-            for pref in preferences { classify(id: pref.id, ckRecordData: pref.ckRecordData) }
+            for pref in preferences { classify(id: pref.id, ckRecordData: pref.ckRecordData, isPerUser: true) }
         }
 
         let totalCount = ownedRecordIDs.count + sharedRecordIDs.count
@@ -475,6 +587,36 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         let bgContext = ModelContext(modelContainer)
         var recordsToSave: [CKRecord] = []
         var recordIDsToDelete: [CKRecord.ID] = []
+        var reclaimedPerUserCache = false
+
+        /// Keep a per-user settings record out of the share. The shared engine must never send
+        /// one, and a private-engine send whose cache points at the other account's zone is
+        /// repaired here so the record goes back into our own zone as a fresh save.
+        /// Returns true when the change was handled and must not be added to the batch.
+        func handlePerUserRecord(_ recordID: CKRecord.ID, ckRecordData: Data?, clearCache: () -> Void) -> Bool {
+            guard isShared else {
+                if isFromSharedZone(ckRecordData) {
+                    logger.info("[\(engineLabel)] Reclaiming per-user record \(recordID.recordName) from another owner's zone")
+                    clearCache()
+                    reclaimedPerUserCache = true
+                }
+                // A change queued by an earlier build can still name a foreign zone. The record we
+                // send is built in our own zone, so the stale pending entry would never be
+                // satisfied — replace it with one the send can clear.
+                guard recordID.zoneID == zoneID else {
+                    engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    engine.state.add(pendingRecordZoneChanges: [
+                        .saveRecord(CKRecord.ID(recordName: recordID.recordName, zoneID: zoneID))
+                    ])
+                    logger.info("[\(engineLabel)] Re-queued per-user record \(recordID.recordName) into our own zone")
+                    return true
+                }
+                return false
+            }
+            logger.info("[\(engineLabel)] Per-user record \(recordID.recordName) never travels through the share — dropping")
+            engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+            return true
+        }
 
         /// Re-route a misrouted record to the correct engine instead of silently dropping it.
         func rerouteToCorrectEngine(_ recordID: CKRecord.ID, uuid: UUID, ckRecordData: Data?, parentCKRecordData: Data? = nil) {
@@ -534,28 +676,45 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     }
                     recordsToSave.append(RecordConversion.record(from: member, zoneID: targetZoneID))
                 } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
-                    let fromShared = isFromSharedZone(section.ckRecordData)
-                    guard fromShared == isShared else {
-                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: section.ckRecordData)
+                    if handlePerUserRecord(recordID, ckRecordData: section.ckRecordData, clearCache: { section.ckRecordData = nil }) {
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: section, zoneID: targetZoneID))
+                    recordsToSave.append(RecordConversion.record(from: section, zoneID: zoneID))
                 } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
-                    let fromShared = isFromSharedZone(preferences.ckRecordData)
-                    guard fromShared == isShared else {
-                        rerouteToCorrectEngine(recordID, uuid: uuid, ckRecordData: preferences.ckRecordData)
+                    if handlePerUserRecord(recordID, ckRecordData: preferences.ckRecordData, clearCache: { preferences.ckRecordData = nil }) {
                         continue
                     }
-                    recordsToSave.append(RecordConversion.record(from: preferences, zoneID: targetZoneID))
+                    recordsToSave.append(RecordConversion.record(from: preferences, zoneID: zoneID))
                 } else {
                     // Object deleted locally before send — remove from pending
                     logger.info("[\(engineLabel)] Record \(recordID.recordName) not found locally, removing from pending")
                     engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 }
             case .deleteRecord(let recordID):
+                // A deletion the old build queued on the shared engine for a hijacked per-user
+                // record would delete the owner's settings after the upgrade. Current routing
+                // never queues one, so this only catches what is already persisted in the engine
+                // state. Only the well-known IDs are recognisable here: a deletion carries no
+                // record type, and a custom section's random UUID is indistinguishable from any
+                // other record's, so one of those stays uncaught.
+                if isShared,
+                   let uuid = UUID(uuidString: recordID.recordName),
+                   Self.wellKnownPerUserIDs.contains(uuid) {
+                    logger.info("[\(engineLabel)] Dropping stale per-user deletion \(recordID.recordName) — these never travel through the share")
+                    engine.state.remove(pendingRecordZoneChanges: [.deleteRecord(recordID)])
+                    continue
+                }
                 recordIDsToDelete.append(recordID)
             @unknown default:
                 break
+            }
+        }
+
+        if reclaimedPerUserCache {
+            do {
+                try bgContext.save()
+            } catch {
+                logger.error("[\(engineLabel)] Failed to clear hijacked per-user record cache: \(error.localizedDescription)")
             }
         }
 
@@ -662,6 +821,12 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 logger.info("[\(engineLabel)] Skipping own record \(record.recordID.recordName) from shared engine (private engine handles these)")
                 continue
             }
+            // Per-user settings use fixed UUIDs, so the owner's copy arriving through the share
+            // would overwrite this account's own settings and their cached zone identity.
+            if fromSharedEngine && Self.perUserRecordTypes.contains(record.recordType) {
+                logger.info("[\(engineLabel)] Skipping per-user record \(record.recordID.recordName) (\(record.recordType)) from the share")
+                continue
+            }
 
             applyFetchedRecord(record, to: context)
         }
@@ -679,6 +844,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             }
             if fromSharedEngine && !deletionIsFromOtherOwner {
                 logger.info("[\(engineLabel)] Skipping own deletion \(deletion.recordID.recordName) from shared engine")
+                continue
+            }
+            if fromSharedEngine && Self.perUserRecordTypes.contains(deletion.recordType) {
+                logger.info("[\(engineLabel)] Skipping per-user deletion \(deletion.recordID.recordName) (\(deletion.recordType)) from the share")
                 continue
             }
 
@@ -700,22 +869,113 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         }
     }
 
+    /// Whether a save for this record name is still queued on either engine. The zone owner
+    /// string differs between how we queue a change and how the server names the record, so the
+    /// match is by name alone.
     @MainActor
-    private func applyFetchedRecord(_ record: CKRecord, to context: ModelContext) {
+    private func hasPendingSave(forRecordName name: String) -> Bool {
+        for engine in [syncEngine, sharedSyncEngine].compactMap({ $0 }) {
+            for change in engine.state.pendingRecordZoneChanges {
+                if case .saveRecord(let pendingID) = change, pendingID.recordName == name {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// The last record this device synced for a record name, decoded from whichever model owns it.
+    /// Used when CloudKit hands back a conflict without a usable ancestor: the save that failed
+    /// was built from this cache, so it is the exact record both sides diverged from.
+    @MainActor
+    private func cachedRecord(forRecordName name: String, in context: ModelContext) -> CKRecord? {
+        guard let uuid = UUID(uuidString: name) else { return nil }
+
+        let cached: Data?
+        if let item = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
+            cached = item.ckRecordData
+        } else if let override_ = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
+            cached = override_.ckRecordData
+        } else if let occurrence = try? context.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
+            cached = occurrence.ckRecordData
+        } else if let member = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
+            cached = member.ckRecordData
+        } else if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
+            cached = section.ckRecordData
+        } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
+            cached = preferences.ckRecordData
+        } else {
+            return nil
+        }
+
+        return cached.flatMap { RecordConversion.decodeLastKnownRecord(from: $0) }
+    }
+
+    /// Decode a model's cached `ckRecordData` into the record this device last synced.
+    private func decodedCache(_ ckRecordData: Data?) -> CKRecord? {
+        ckRecordData.flatMap { RecordConversion.decodeLastKnownRecord(from: $0) }
+    }
+
+    /// An ancestor is only worth merging against when it carries field values; a system-fields-only
+    /// record tells us nothing about which side changed what.
+    private func usableAncestor(_ record: CKRecord?) -> CKRecord? {
+        guard let record, !record.allKeys().isEmpty else { return nil }
+        return record
+    }
+
+    /// The record to write into the local model for an incoming server record. When a local save
+    /// for the same record is still queued, the local edit must survive, so the incoming record is
+    /// merged against `ancestor` and the current local values, and the queued push carries the
+    /// merged result. Otherwise the server record is the truth and is applied as is.
+    ///
+    /// The two callers diverge from different ancestors. On the fetch path the local model last
+    /// agreed with the cached record, so that is the ancestor. On the conflict path the model
+    /// diverged from the snapshot we submitted, not from the cache, so the caller passes the
+    /// submitted record: a value the user has since reverted back to the cached one still reads
+    /// as a local change and survives.
+    @MainActor
+    private func recordToApply(
+        incoming: CKRecord,
+        ancestor: CKRecord?,
+        local: () -> CKRecord
+    ) -> CKRecord {
+        guard hasPendingSave(forRecordName: incoming.recordID.recordName) else { return incoming }
+        return RecordMerge.threeWay(ancestor: ancestor, client: local(), server: incoming).record
+    }
+
+    /// Apply a server record to the local store. `merged` is the conflict path's already-merged
+    /// record: it stands in for the server record when deciding what the model should hold,
+    /// while `record` stays the pristine server copy that gets cached as the next ancestor.
+    /// `ancestor` overrides the ancestor the merge diffs against; nil means the cached record.
+    @MainActor
+    private func applyFetchedRecord(
+        _ record: CKRecord,
+        to context: ModelContext,
+        merged: CKRecord? = nil,
+        ancestor: CKRecord? = nil
+    ) {
         guard let uuid = UUID(uuidString: record.recordID.recordName) else { return }
-        let ckData = RecordConversion.encodeSystemFields(of: record)
+        let ckData = RecordConversion.encodeRecord(record)
 
         switch record.recordType {
         case RecordConversion.budgetItemRecordType:
             let predicate = #Predicate<BudgetItem> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: predicate)).first {
-                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
-                if remoteModified >= existing.modifiedAt {
-                    RecordConversion.applyRecord(record, to: existing)
-                    // Restore familyMembers relationship
-                    restoreFamilyMembers(from: record, to: existing, in: context)
+                let resolved = recordToApply(
+                    incoming: merged ?? record,
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                ) {
+                    RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
+                RecordConversion.applyRecord(resolved, to: existing)
+                // The cache is the server's record, never the merged one: the merged values live
+                // in the model, and the next push diffs the model against this cache to send
+                // exactly the keys the client won. Caching the merge instead would claim the
+                // server already holds our edits, so the following conflict would read them as
+                // unchanged and drop them.
                 existing.ckRecordData = ckData
+                // Restore familyMembers relationship
+                restoreFamilyMembers(from: resolved, to: existing, in: context)
             } else {
                 let item = BudgetItem(
                     name: record["name"] as? String ?? "Unknown",
@@ -747,14 +1007,17 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.occurrenceRecordType:
             let predicate = #Predicate<Occurrence> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
-                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
-                if remoteModified >= existing.modifiedAt {
-                    RecordConversion.applyRecord(record, to: existing)
+                let resolved = recordToApply(
+                    incoming: merged ?? record,
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                ) {
+                    RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
+                RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
                 // Restore budgetItem relationship if missing (may have been nil if parent wasn't synced yet)
                 if existing.budgetItem == nil,
-                   let ref = record["budgetItemRef"] as? CKRecord.Reference,
+                   let ref = resolved["budgetItemRef"] as? CKRecord.Reference,
                    let parentUUID = UUID(uuidString: ref.recordID.recordName) {
                     let parentPred = #Predicate<BudgetItem> { $0.id == parentUUID }
                     existing.budgetItem = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: parentPred)).first
@@ -817,10 +1080,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.amountOverrideRecordType:
             let predicate = #Predicate<AmountOverride> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: predicate)).first {
-                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
-                if remoteModified >= existing.modifiedAt {
-                    RecordConversion.applyRecord(record, to: existing)
+                let resolved = recordToApply(
+                    incoming: merged ?? record,
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                ) {
+                    RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
+                RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
             } else {
                 let override_ = AmountOverride(
@@ -845,10 +1111,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.familyMemberRecordType:
             let predicate = #Predicate<FamilyMember> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: predicate)).first {
-                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
-                if remoteModified >= existing.modifiedAt {
-                    RecordConversion.applyRecord(record, to: existing)
+                let resolved = recordToApply(
+                    incoming: merged ?? record,
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                ) {
+                    RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
+                RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
             } else {
                 let member = FamilyMember(
@@ -865,10 +1134,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.dashboardSectionRecordType:
             let predicate = #Predicate<DashboardSection> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: predicate)).first {
-                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
-                if remoteModified >= existing.modifiedAt {
-                    RecordConversion.applyRecord(record, to: existing)
+                let resolved = recordToApply(
+                    incoming: merged ?? record,
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                ) {
+                    RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
+                RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
             } else {
                 let section = DashboardSection(
@@ -895,10 +1167,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case RecordConversion.userPreferencesRecordType:
             let predicate = #Predicate<UserPreferences> { $0.id == uuid }
             if let existing = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: predicate)).first {
-                let remoteModified = record["modifiedAt"] as? Date ?? Date.distantPast
-                if remoteModified >= existing.modifiedAt {
-                    RecordConversion.applyRecord(record, to: existing)
+                let resolved = recordToApply(
+                    incoming: merged ?? record,
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                ) {
+                    RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
+                RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
             } else {
                 let preferences = UserPreferences(
@@ -1047,27 +1322,41 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
             switch error.code {
             case .serverRecordChanged:
-                // Conflict — another device saved this record first. Resolve by
-                // modifiedAt (last-writer-wins), but ACTUALLY merge: previously we
-                // only cached the server's change tag and re-pushed our local copy,
-                // which silently discarded the other device's edit and left the
-                // loser showing stale data. Now apply the server's fields when its
-                // copy is newer/equal, and only re-push when ours is genuinely newer.
+                // Conflict — another device saved this record first. Reconcile field by field
+                // against the ancestor CloudKit hands back, so edits to different fields both
+                // survive instead of one whole copy winning on a timestamp.
                 if let serverRecord = error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord {
-                    let serverModified = serverRecord["modifiedAt"] as? Date ?? Date.distantPast
-                    let localModified = localModifiedAt(forRecordName: recordID.recordName, in: context) ?? Date.distantPast
-                    let localIsNewer = localModified > serverModified
+                    let clientRecord = error.userInfo[CKRecordChangedErrorClientRecordKey] as? CKRecord ?? failure.record
+                    // CloudKit doesn't always hand back an ancestor, and the one it gives can be
+                    // field-less. Falling through to last-writer-wins there would throw away the
+                    // server's field edits, and no later merge recovers them. The save that failed
+                    // was built from our cached record, so that cache is the exact ancestor.
+                    let ancestorRecord = usableAncestor(error.userInfo[CKRecordChangedErrorAncestorRecordKey] as? CKRecord)
+                        ?? cachedRecord(forRecordName: recordID.recordName, in: context)
+                    let outcome = RecordMerge.threeWay(
+                        ancestor: ancestorRecord,
+                        client: clientRecord,
+                        server: serverRecord
+                    )
 
-                    // applyFetchedRecord applies the server fields only when the
-                    // server copy is newer/equal, and always refreshes the cached
-                    // change tag — so a re-push afterwards carries the correct tag.
-                    applyFetchedRecord(serverRecord, to: context)
+                    // The pristine server record is what gets cached; the merged copy stands in
+                    // for it when deciding the model's values. If the user edited this record
+                    // again while the failed save was in flight, that edit queued its own save,
+                    // so the pending-save merge runs on top of the conflict merge. That merge
+                    // diffs against the record we submitted, not the cache, because that is what
+                    // the model has since diverged from.
+                    applyFetchedRecord(
+                        serverRecord,
+                        to: context,
+                        merged: outcome.record,
+                        ancestor: clientRecord
+                    )
 
-                    if localIsNewer {
-                        logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — local is newer, re-pushing with refreshed tag")
+                    if outcome.differsFromServer {
+                        logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — merged, re-pushing")
                         targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
                     } else {
-                        logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — server is newer, applied server copy")
+                        logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — server already has the merged result")
                     }
                 }
 
@@ -1123,7 +1412,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     private func updateCKRecordData(from record: CKRecord, in context: ModelContext) {
         guard let uuid = UUID(uuidString: record.recordID.recordName) else { return }
 
-        let ckData = RecordConversion.encodeSystemFields(of: record)
+        let ckData = RecordConversion.encodeRecord(record)
 
         if let item = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
             item.ckRecordData = ckData
@@ -1140,28 +1429,63 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         }
     }
 
-    /// The local model's `modifiedAt` for a record name, used to decide the winner
-    /// of a save conflict. Returns nil if no local model matches.
-    @MainActor
-    private func localModifiedAt(forRecordName name: String, in context: ModelContext) -> Date? {
-        guard let uuid = UUID(uuidString: name) else { return nil }
-        if let item = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: #Predicate { $0.id == uuid })).first {
-            return item.modifiedAt
-        } else if let override_ = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: #Predicate { $0.id == uuid })).first {
-            return override_.modifiedAt
-        } else if let occurrence = try? context.fetch(FetchDescriptor<Occurrence>(predicate: #Predicate { $0.id == uuid })).first {
-            return occurrence.modifiedAt
-        } else if let member = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: #Predicate { $0.id == uuid })).first {
-            return member.modifiedAt
-        } else if let section = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
-            return section.modifiedAt
-        } else if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
-            return preferences.modifiedAt
-        }
-        return nil
-    }
-
     // MARK: - Recovery
+
+    /// Undo the per-user settings hijack on a device that ran an earlier build.
+    ///
+    /// `UserPreferences` and the two default `DashboardSection`s use fixed UUIDs, and both family
+    /// members pushed them through their own private zones. The shared engine then delivered the
+    /// owner's copies to the participant, which matched them by UUID and adopted the owner's zone
+    /// into `ckRecordData` — from then on the participant's settings were written into the owner's
+    /// zone, and the two accounts overwrote each other's preferences. Any per-user record still
+    /// cached in a foreign zone is reset so it goes back out as this account's own record, and a
+    /// custom section that only exists because it leaked in through the share is removed.
+    @MainActor
+    func reclaimPerUserRecords() {
+        guard let context = modelContainer?.mainContext else { return }
+
+        let defaultIDs = Self.wellKnownPerUserIDs
+        var reclaimedIDs: [CKRecord.ID] = []
+        var deletedCount = 0
+
+        if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>()) {
+            for pref in preferences where isFromSharedZone(pref.ckRecordData) {
+                if defaultIDs.contains(pref.id) {
+                    pref.ckRecordData = nil
+                    reclaimedIDs.append(CKRecord.ID(recordName: pref.id.uuidString, zoneID: zoneID))
+                } else {
+                    context.delete(pref)
+                    deletedCount += 1
+                }
+            }
+        }
+
+        if let sections = try? context.fetch(FetchDescriptor<DashboardSection>()) {
+            for section in sections where isFromSharedZone(section.ckRecordData) {
+                if defaultIDs.contains(section.id) {
+                    section.ckRecordData = nil
+                    reclaimedIDs.append(CKRecord.ID(recordName: section.id.uuidString, zoneID: zoneID))
+                } else {
+                    context.delete(section)
+                    deletedCount += 1
+                }
+            }
+        }
+
+        guard !reclaimedIDs.isEmpty || deletedCount > 0 else { return }
+
+        do {
+            try context.save()
+        } catch {
+            logger.error("Failed to save reclaimed per-user records: \(error.localizedDescription)")
+            return
+        }
+
+        if !reclaimedIDs.isEmpty {
+            pushChanges(for: reclaimedIDs)
+        }
+        logger.info("Reclaimed \(reclaimedIDs.count) per-user record(s) into our own zone, deleted \(deletedCount) that leaked in through the share")
+    }
 
     /// Force a full resync — the "Unstuck" recovery action.
     ///
