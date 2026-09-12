@@ -564,6 +564,12 @@ final class SyncCoordinator: @unchecked Sendable {
 
         Task.detached { [self, logger, legacySharedDeletionScrubKey] in
             var remaining = candidates
+            // Real deletions are held here rather than enqueued as they are classified. While the
+            // done flag is still false the gate would quarantine each one straight back, and the
+            // per-candidate write would then filter it out for being a classified candidate,
+            // losing it from both queues. They go out once the flag is set, or back into the
+            // quarantine for a later pass if anything is still unclassified.
+            var toRestore: [CKRecord.ID] = []
             var restored = 0
             var dropped = 0
 
@@ -574,15 +580,7 @@ final class SyncCoordinator: @unchecked Sendable {
                         dropped += 1
                         logger.info("Dropped legacy shared deletion \(recordID.recordName) (\(record.recordType)) — per-user records never travel through the share")
                     } else {
-                        // These are the previous account's records. The switch already cleared the
-                        // buffer and the quarantine, so the pass stops without writing anything
-                        // rather than queueing one account's deletion against another's database.
-                        guard currentSessionEpoch() == epoch else {
-                            logger.info("Account switched mid-classification — abandoning the pass")
-                            setScrubbing(false)
-                            return
-                        }
-                        enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
+                        toRestore.append(recordID)
                         restored += 1
                     }
                     remaining.removeAll { $0 == recordID }
@@ -608,10 +606,26 @@ final class SyncCoordinator: @unchecked Sendable {
 
             setScrubbing(false)
 
+            guard currentSessionEpoch() == epoch else {
+                logger.info("Account switched mid-classification — abandoning the pass")
+                return
+            }
+
             if loadLegacySharedDeletionQuarantine().isEmpty {
+                // Flag first, so the gate stops withholding before these go back on the queue.
                 UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
                     .set(true, forKey: legacySharedDeletionScrubKey)
+                for recordID in toRestore {
+                    enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
+                }
                 logger.info("Legacy shared deletion scrub complete: \(restored) re-queued, \(dropped) dropped")
+            } else if !toRestore.isEmpty {
+                // Something is still unclassified, so the gate is still withholding. Park the real
+                // deletions back in the quarantine and let a later pass restore them.
+                let quarantinedMeanwhile = loadLegacySharedDeletionQuarantine()
+                    .filter { !candidates.contains($0) }
+                saveLegacySharedDeletionQuarantine(remaining + toRestore + quarantinedMeanwhile)
+                logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, \(toRestore.count) confirmed deletion(s) parked, retrying on the next start (\(dropped) dropped)")
             } else {
                 logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, retrying on the next start (\(restored) re-queued, \(dropped) dropped)")
             }
@@ -1967,7 +1981,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     let record = try await CloudKitManager.shared.privateDatabase.record(for: recordID)
                     await MainActor.run {
                         guard let context = modelContainer?.mainContext else { return }
-                        applyFetchedRecord(record, to: context, pending: PendingChangeNames())
+                        applyFetchedRecord(record, to: context, pending: pendingChangeNames())
                         do {
                             try context.save()
                         } catch {
