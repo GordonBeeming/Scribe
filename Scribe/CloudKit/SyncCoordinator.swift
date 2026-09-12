@@ -17,6 +17,7 @@ final class SyncCoordinator: @unchecked Sendable {
 
     private let stateKey = "syncEngineState"
     private let sharedStateKey = "sharedSyncEngineState"
+    private let legacySharedDeletionScrubKey = "didScrubLegacySharedDeletions"
     private let zoneName = "ScribeBudgetZone"
 
     /// Settings that belong to one iCloud account rather than to the shared budget. They use
@@ -40,9 +41,13 @@ final class SyncCoordinator: @unchecked Sendable {
         let change: CKSyncEngine.PendingRecordZoneChange
     }
 
-    /// Guards the buffer *and* the two engine properties. Both have to move under one lock:
-    /// otherwise a push can read a nil engine, lose the race to the drain, and leave its change
-    /// buffered until the next launch.
+    /// Guards the buffer, the two engine properties, *and* the handover of changes to an engine.
+    /// Reading the engine and buffering have to be atomic, or a push can read a nil engine, lose
+    /// the race to the drain, and sit buffered until the next launch. Handing changes over has to
+    /// be inside the same hold, or `stop()` can nil the engines in between and the change lands on
+    /// a discarded engine — `pushAllLocalData()` re-queues saves after a resync, but not
+    /// deletions. Holding the lock across `state.add` is safe: it is an in-memory append that
+    /// never calls back into us synchronously, so it cannot deadlock.
     private let deferredChangesLock = NSLock()
     private var deferredChanges: [DeferredChange] = []
 
@@ -280,9 +285,12 @@ final class SyncCoordinator: @unchecked Sendable {
     /// documented as indeterminate, so an app that only ever waits can show minutes-old data
     /// after coming to the foreground.
     func fetchAllChanges() {
+        // Snapshot under the lock: stop() and publishEngines() mutate both properties under it.
+        deferredChangesLock.lock()
         var engines: [(label: String, engine: CKSyncEngine)] = []
         if let syncEngine { engines.append(("private", syncEngine)) }
         if let sharedSyncEngine { engines.append(("shared", sharedSyncEngine)) }
+        deferredChangesLock.unlock()
 
         guard !engines.isEmpty else {
             logger.debug("Cannot fetch changes: sync engines not started")
@@ -306,10 +314,7 @@ final class SyncCoordinator: @unchecked Sendable {
     // MARK: - Push local changes
 
     /// Add pending changes to an engine, or buffer them when that engine doesn't exist yet.
-    ///
-    /// Reading the engine and appending to the buffer are one critical section. Split apart, a
-    /// caller that sees a nil engine can be overtaken by `publishEngines(...)` draining the
-    /// buffer, and its append then sits there unseen until the next launch.
+    /// Everything happens inside one `deferredChangesLock` hold; see the lock's declaration.
     private func enqueue(_ changes: [CKSyncEngine.PendingRecordZoneChange], to target: DeferredChange.Target) {
         guard !changes.isEmpty else { return }
         let label = target == .privateDatabase ? "private" : "shared"
@@ -322,23 +327,19 @@ final class SyncCoordinator: @unchecked Sendable {
             logger.info("Deferred \(changes.count) change(s) for the \(label) engine until it starts (\(buffered) buffered)")
             return
         }
-        deferredChangesLock.unlock()
-
         engine.state.add(pendingRecordZoneChanges: changes)
+        deferredChangesLock.unlock()
     }
 
-    /// Publish both engines and take the buffer in one lock hold, then hand the buffered work
-    /// over. Publication and the drain have to be atomic against `enqueue` for the same reason
-    /// the read and the append are.
+    /// Publish both engines and hand the buffered work over, all in one lock hold so no push can
+    /// slip between the two and no `stop()` can discard an engine mid-handover.
     private func publishEngines(private privateEngine: CKSyncEngine, shared sharedEngine: CKSyncEngine) {
         deferredChangesLock.lock()
         syncEngine = privateEngine
         sharedSyncEngine = sharedEngine
         let buffered = deferredChanges
         deferredChanges.removeAll()
-        deferredChangesLock.unlock()
 
-        guard !buffered.isEmpty else { return }
         let privateChanges = buffered.filter { $0.target == .privateDatabase }.map(\.change)
         let sharedChanges = buffered.filter { $0.target == .sharedDatabase }.map(\.change)
         if !privateChanges.isEmpty {
@@ -347,7 +348,77 @@ final class SyncCoordinator: @unchecked Sendable {
         if !sharedChanges.isEmpty {
             sharedEngine.state.add(pendingRecordZoneChanges: sharedChanges)
         }
-        logger.info("Drained deferred changes: \(privateChanges.count) private, \(sharedChanges.count) shared")
+        deferredChangesLock.unlock()
+
+        if !buffered.isEmpty {
+            logger.info("Drained deferred changes: \(privateChanges.count) private, \(sharedChanges.count) shared")
+        }
+
+        scrubLegacySharedDeletionsIfNeeded(on: sharedEngine)
+    }
+
+    /// One-time repair for deletions the old build queued on the shared engine before per-user
+    /// records were kept out of the share. The cheap guard in `nextRecordZoneChangeBatch` catches
+    /// the three well-known settings IDs, but a custom section's UUID is random and a pending
+    /// deletion carries no record type, so the only way to classify one is to ask the server what
+    /// the record is. Sending it blind would delete the owner's data.
+    ///
+    /// Every candidate leaves the captured engine's state immediately so nothing ships while we
+    /// check, then each is re-added through `enqueue` unless the server says it is a per-user
+    /// record or that it is already gone. The flag is set once the pass finishes, so this never
+    /// runs again on this device.
+    private func scrubLegacySharedDeletionsIfNeeded(on sharedEngine: CKSyncEngine) {
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        guard defaults?.bool(forKey: legacySharedDeletionScrubKey) != true else { return }
+
+        let candidates: [CKRecord.ID] = sharedEngine.state.pendingRecordZoneChanges.compactMap { change in
+            guard case .deleteRecord(let recordID) = change,
+                  recordID.zoneID.ownerName != CKCurrentUserDefaultName else { return nil }
+            return recordID
+        }
+
+        guard !candidates.isEmpty else {
+            defaults?.set(true, forKey: legacySharedDeletionScrubKey)
+            return
+        }
+
+        sharedEngine.state.remove(pendingRecordZoneChanges: candidates.map { .deleteRecord($0) })
+        logger.info("Scrubbing \(candidates.count) legacy shared deletion(s): withheld pending a type check")
+
+        // Re-adds go through enqueue rather than the captured engine: this pass is long enough for
+        // a forceFullResync() to replace the engines underneath it, and a deletion put back on a
+        // discarded engine is gone for good. enqueue lands it on whichever engine is current, or
+        // buffers it when the restart is still in flight.
+        Task.detached { [self, logger, legacySharedDeletionScrubKey] in
+            var restored = 0
+            var dropped = 0
+
+            for recordID in candidates {
+                do {
+                    let record = try await CloudKitManager.shared.sharedDatabase.record(for: recordID)
+                    if Self.perUserRecordTypes.contains(record.recordType) {
+                        dropped += 1
+                        logger.info("Dropped legacy shared deletion \(recordID.recordName) (\(record.recordType)) — per-user records never travel through the share")
+                    } else {
+                        enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
+                        restored += 1
+                    }
+                } catch let error as CKError where error.code == .unknownItem {
+                    dropped += 1
+                    logger.info("Legacy shared deletion \(recordID.recordName) — record already gone from the server, dropping")
+                } catch {
+                    // Anything else is unknown, not per-user. A legitimate deletion must never be
+                    // lost to a network blip, so it goes back on the queue.
+                    enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
+                    restored += 1
+                    logger.error("Could not classify legacy shared deletion \(recordID.recordName), re-queued: \(error.localizedDescription)")
+                }
+            }
+
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
+                .set(true, forKey: legacySharedDeletionScrubKey)
+            logger.info("Legacy shared deletion scrub complete: \(restored) re-queued, \(dropped) dropped")
+        }
     }
 
     func pushChanges(for recordIDs: [CKRecord.ID]) {
@@ -802,6 +873,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             return false
         }
 
+        let pending = pendingChangeNames()
+
         for modification in sortedModifications {
             let record = modification.record
             let isFromOtherOwner = record.recordID.zoneID.ownerName != CKCurrentUserDefaultName
@@ -828,7 +901,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 continue
             }
 
-            applyFetchedRecord(record, to: context)
+            applyFetchedRecord(record, to: context, pending: pending)
         }
 
         // Second pass: repair child records whose parent wasn't available during first pass.
@@ -863,25 +936,43 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             logger.error("Failed to save fetched record zone changes: \(error.localizedDescription)")
         }
 
+        // A fetched AmountOverride changes what the item's headline amount should be, and nothing
+        // else recomputes it until the next foreground — widgets read BudgetItem.amount directly,
+        // so the derived value has to catch up here.
+        BudgetItemAmountRefresher.refreshAll(in: context)
+
         let sectionCountAfter = (try? context.fetchCount(FetchDescriptor<DashboardSection>())) ?? -1
         if sectionCountBefore != sectionCountAfter {
             logger.warning("DashboardSection count changed: \(sectionCountBefore) -> \(sectionCountAfter)")
         }
     }
 
-    /// Whether a save for this record name is still queued on either engine. The zone owner
-    /// string differs between how we queue a change and how the server names the record, so the
-    /// match is by name alone.
+    /// The record names with work still queued on either engine.
+    private struct PendingChangeNames {
+        var saves: Set<String> = []
+        var deletions: Set<String> = []
+    }
+
+    /// Gather both name sets in one pass over both engines. Computed once per batch: a per-record
+    /// scan is O(records × pending), which bites hardest during an Unstuck resync when both sides
+    /// are the whole dataset. The zone owner string differs between how we queue a change and how
+    /// the server names the record, so the match is by name alone.
     @MainActor
-    private func hasPendingSave(forRecordName name: String) -> Bool {
+    private func pendingChangeNames() -> PendingChangeNames {
+        var pending = PendingChangeNames()
         for engine in [syncEngine, sharedSyncEngine].compactMap({ $0 }) {
             for change in engine.state.pendingRecordZoneChanges {
-                if case .saveRecord(let pendingID) = change, pendingID.recordName == name {
-                    return true
+                switch change {
+                case .saveRecord(let pendingID):
+                    pending.saves.insert(pendingID.recordName)
+                case .deleteRecord(let pendingID):
+                    pending.deletions.insert(pendingID.recordName)
+                @unknown default:
+                    break
                 }
             }
         }
-        return false
+        return pending
     }
 
     /// The last record this device synced for a record name, decoded from whichever model owns it.
@@ -937,9 +1028,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     private func recordToApply(
         incoming: CKRecord,
         ancestor: CKRecord?,
+        pendingSaveNames: Set<String>,
         local: () -> CKRecord
     ) -> CKRecord {
-        guard hasPendingSave(forRecordName: incoming.recordID.recordName) else { return incoming }
+        guard pendingSaveNames.contains(incoming.recordID.recordName) else { return incoming }
         return RecordMerge.threeWay(ancestor: ancestor, client: local(), server: incoming).record
     }
 
@@ -951,6 +1043,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     private func applyFetchedRecord(
         _ record: CKRecord,
         to context: ModelContext,
+        pending: PendingChangeNames,
         merged: CKRecord? = nil,
         ancestor: CKRecord? = nil
     ) {
@@ -963,7 +1056,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             if let existing = try? context.fetch(FetchDescriptor<BudgetItem>(predicate: predicate)).first {
                 let resolved = recordToApply(
                     incoming: merged ?? record,
-                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData),
+                    pendingSaveNames: pending.saves
                 ) {
                     RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
@@ -977,6 +1071,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 // Restore familyMembers relationship
                 restoreFamilyMembers(from: resolved, to: existing, in: context)
             } else {
+                // The user deleted this locally and the deletion hasn't been sent yet. Inserting
+                // the server's copy now would resurrect it: the queued deletion then removes the
+                // record from the server and the recreated model is left behind as an orphan.
+                guard !pending.deletions.contains(record.recordID.recordName) else {
+                    logger.info("Skipping insert of \(record.recordID.recordName) — a local deletion for it is still queued")
+                    break
+                }
                 let item = BudgetItem(
                     name: record["name"] as? String ?? "Unknown",
                     type: ItemType(rawValue: record["itemType"] as? String ?? "expense") ?? .expense,
@@ -1009,7 +1110,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             if let existing = try? context.fetch(FetchDescriptor<Occurrence>(predicate: predicate)).first {
                 let resolved = recordToApply(
                     incoming: merged ?? record,
-                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData),
+                    pendingSaveNames: pending.saves
                 ) {
                     RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
@@ -1057,6 +1159,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     }
                 }
 
+                // Checked after the duplicate merge above, which reuses an existing local model
+                // rather than creating one, so a pending deletion has nothing to resurrect there.
+                guard !pending.deletions.contains(record.recordID.recordName) else {
+                    logger.info("Skipping insert of \(record.recordID.recordName) — a local deletion for it is still queued")
+                    break
+                }
+
                 let occurrence = Occurrence(
                     dueDate: remoteDueDate,
                     expectedAmount: (record["expectedAmount"] as? NSNumber)?.decimalValue ?? 0,
@@ -1082,13 +1191,18 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             if let existing = try? context.fetch(FetchDescriptor<AmountOverride>(predicate: predicate)).first {
                 let resolved = recordToApply(
                     incoming: merged ?? record,
-                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData),
+                    pendingSaveNames: pending.saves
                 ) {
                     RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
                 RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
             } else {
+                guard !pending.deletions.contains(record.recordID.recordName) else {
+                    logger.info("Skipping insert of \(record.recordID.recordName) — a local deletion for it is still queued")
+                    break
+                }
                 let override_ = AmountOverride(
                     effectiveDate: record["effectiveDate"] as? Date ?? Date(),
                     amount: (record["amount"] as? NSNumber)?.decimalValue ?? 0,
@@ -1113,13 +1227,18 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             if let existing = try? context.fetch(FetchDescriptor<FamilyMember>(predicate: predicate)).first {
                 let resolved = recordToApply(
                     incoming: merged ?? record,
-                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData),
+                    pendingSaveNames: pending.saves
                 ) {
                     RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
                 RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
             } else {
+                guard !pending.deletions.contains(record.recordID.recordName) else {
+                    logger.info("Skipping insert of \(record.recordID.recordName) — a local deletion for it is still queued")
+                    break
+                }
                 let member = FamilyMember(
                     name: record["name"] as? String ?? "Unknown",
                     sortOrder: record["sortOrder"] as? Int ?? 0
@@ -1136,13 +1255,18 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             if let existing = try? context.fetch(FetchDescriptor<DashboardSection>(predicate: predicate)).first {
                 let resolved = recordToApply(
                     incoming: merged ?? record,
-                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData),
+                    pendingSaveNames: pending.saves
                 ) {
                     RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
                 RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
             } else {
+                guard !pending.deletions.contains(record.recordID.recordName) else {
+                    logger.info("Skipping insert of \(record.recordID.recordName) — a local deletion for it is still queued")
+                    break
+                }
                 let section = DashboardSection(
                     sectionType: DashboardSectionType(rawValue: record["sectionTypeRaw"] as? String ?? "detailedWeekly") ?? .detailedWeekly,
                     anchor: {
@@ -1169,13 +1293,18 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             if let existing = try? context.fetch(FetchDescriptor<UserPreferences>(predicate: predicate)).first {
                 let resolved = recordToApply(
                     incoming: merged ?? record,
-                    ancestor: ancestor ?? decodedCache(existing.ckRecordData)
+                    ancestor: ancestor ?? decodedCache(existing.ckRecordData),
+                    pendingSaveNames: pending.saves
                 ) {
                     RecordConversion.record(from: existing, zoneID: record.recordID.zoneID)
                 }
                 RecordConversion.applyRecord(resolved, to: existing)
                 existing.ckRecordData = ckData
             } else {
+                guard !pending.deletions.contains(record.recordID.recordName) else {
+                    logger.info("Skipping insert of \(record.recordID.recordName) — a local deletion for it is still queued")
+                    break
+                }
                 let preferences = UserPreferences(
                     defaultRangeRaw: record["defaultRangeRaw"] as? String ?? "14days",
                     lookbackDays: record["lookbackDays"] as? Int ?? 5,
@@ -1315,6 +1444,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             logger.info("[\(engineLabel)] Saved record \(savedRecord.recordID.recordName)")
         }
 
+        let pending = pendingChangeNames()
+
         // Handle failures
         for failure in changes.failedRecordSaves {
             let recordID = failure.record.recordID
@@ -1348,6 +1479,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     applyFetchedRecord(
                         serverRecord,
                         to: context,
+                        pending: pending,
                         merged: outcome.record,
                         ancestor: clientRecord
                     )

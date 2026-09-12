@@ -6,7 +6,7 @@ import CloudKit
 /// Whole-record last-writer-wins loses data whenever the two edits touched different fields:
 /// the loser's change is simply gone, and whose clock is fast decides which one. With the
 /// last-synced record cached locally we have a common ancestor, so each key can be resolved
-/// on its own and only genuine same-key collisions need a timestamp.
+/// on its own and only genuine same-key collisions fall back to a timestamp.
 enum RecordMerge {
     /// Result of reconciling one record. `record` is a copy of the server record with the merged
     /// field values written into it, so it carries the server's change tag; `differsFromServer`
@@ -62,7 +62,12 @@ enum RecordMerge {
                 let clientChanged = !valuesEqual(clientValue, ancestorValue)
                 let serverChanged = !valuesEqual(serverValue, ancestorValue)
                 if clientChanged {
-                    // Both moved the same field to different values, so the newer edit wins.
+                    // Both moved the same field to different values, so one has to give. The
+                    // record whose last edit is newer wins the key. `modifiedAt` is record-level,
+                    // so this is not "whoever changed this field later" — we can't know that
+                    // without a timestamp per field, which would mean a new column on every model
+                    // for a tie-break this rare. Record-level keeps it deterministic on every
+                    // device, and a tie below keeps the server.
                     let clientWinsCollision = clientModified > serverModified
                         && !valuesEqual(clientValue, serverValue)
                     if !serverChanged || clientWinsCollision {
