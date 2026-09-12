@@ -526,12 +526,31 @@ final class SyncCoordinator: @unchecked Sendable {
         return sessionEpoch
     }
 
+    /// Serialises the quarantine's read-modify-write cycles. The gate runs on the engine's queue
+    /// and the classification pass in a detached task, so without this a gate insert landing
+    /// between a pass's load and save is dropped, the following empty check sets the done flag,
+    /// and an unclassified deletion ships.
+    private let quarantineLock = NSLock()
+
+    /// Apply a change to the persisted quarantine as one atomic read-modify-write. Returns whether
+    /// the quarantine is empty afterwards, so a caller deciding the done flag reads the same
+    /// snapshot it just wrote.
+    @discardableResult
+    private func mutateQuarantine(_ body: (inout [CKRecord.ID]) -> Void) -> Bool {
+        quarantineLock.lock()
+        defer { quarantineLock.unlock() }
+        var quarantined = loadLegacySharedDeletionQuarantine()
+        body(&quarantined)
+        saveLegacySharedDeletionQuarantine(quarantined)
+        return quarantined.isEmpty
+    }
+
     /// Add one record ID to the persisted quarantine, if it isn't already there.
     private func quarantineLegacySharedDeletion(_ recordID: CKRecord.ID) {
-        var quarantined = loadLegacySharedDeletionQuarantine()
-        guard !quarantined.contains(recordID) else { return }
-        quarantined.append(recordID)
-        saveLegacySharedDeletionQuarantine(quarantined)
+        mutateQuarantine { quarantined in
+            guard !quarantined.contains(recordID) else { return }
+            quarantined.append(recordID)
+        }
     }
 
     /// Ask the server what each quarantined deletion refers to and act on the answer. Only one pass
@@ -597,11 +616,13 @@ final class SyncCoordinator: @unchecked Sendable {
                     return
                 }
                 // Persisted per candidate so an interrupted pass resumes from where it stopped.
-                // Anything the gate quarantined meanwhile is merged back rather than overwritten
-                // with this pass's stale view of the list.
-                let quarantinedMeanwhile = loadLegacySharedDeletionQuarantine()
-                    .filter { !candidates.contains($0) }
-                saveLegacySharedDeletionQuarantine(remaining + quarantinedMeanwhile)
+                // Dropping just the one classified ID, rather than rewriting the whole list, is
+                // what keeps anything the gate quarantined meanwhile.
+                if !remaining.contains(recordID) {
+                    mutateQuarantine { quarantined in
+                        quarantined.removeAll { $0 == recordID }
+                    }
+                }
             }
 
             setScrubbing(false)
@@ -611,7 +632,15 @@ final class SyncCoordinator: @unchecked Sendable {
                 return
             }
 
-            if loadLegacySharedDeletionQuarantine().isEmpty {
+            // The park and the emptiness check are one atomic step, so the done flag is decided on
+            // the same snapshot that was just written. Anything still unclassified means the gate
+            // is still withholding, so the confirmed deletions are parked for a later pass.
+            let quarantineIsEmpty = mutateQuarantine { quarantined in
+                guard !quarantined.isEmpty else { return }
+                quarantined.append(contentsOf: toRestore.filter { !quarantined.contains($0) })
+            }
+
+            if quarantineIsEmpty {
                 // Flag first, so the gate stops withholding before these go back on the queue.
                 UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
                     .set(true, forKey: legacySharedDeletionScrubKey)
@@ -619,15 +648,8 @@ final class SyncCoordinator: @unchecked Sendable {
                     enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
                 }
                 logger.info("Legacy shared deletion scrub complete: \(restored) re-queued, \(dropped) dropped")
-            } else if !toRestore.isEmpty {
-                // Something is still unclassified, so the gate is still withholding. Park the real
-                // deletions back in the quarantine and let a later pass restore them.
-                let quarantinedMeanwhile = loadLegacySharedDeletionQuarantine()
-                    .filter { !candidates.contains($0) }
-                saveLegacySharedDeletionQuarantine(remaining + toRestore + quarantinedMeanwhile)
-                logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, \(toRestore.count) confirmed deletion(s) parked, retrying on the next start (\(dropped) dropped)")
             } else {
-                logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, retrying on the next start (\(restored) re-queued, \(dropped) dropped)")
+                logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, \(toRestore.count) confirmed deletion(s) parked, retrying on the next start (\(dropped) dropped)")
             }
         }
     }
