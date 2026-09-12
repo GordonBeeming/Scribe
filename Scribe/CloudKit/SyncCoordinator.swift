@@ -65,9 +65,15 @@ final class SyncCoordinator: @unchecked Sendable {
     /// `.stateUpdate` from one would write its stale serialization under the live key and
     /// resurrect the very token a resync just dropped. Identity is matched rather than comparing
     /// against the live engine, because an event can fire between `CKSyncEngine(...)` and
-    /// publication and must still be handled. A handful of identifiers per process, so it is never
-    /// pruned.
-    private var retiredEngines: Set<ObjectIdentifier> = []
+    /// publication and must still be handled. The engines are retained as the values: an
+    /// identifier is just an address, and a deallocated engine's address can be handed to a new
+    /// one, whose events would then be ignored for the rest of the process. A handful per process,
+    /// so it is never pruned.
+    private var retiredEngines: [ObjectIdentifier: CKSyncEngine] = [:]
+
+    /// Bumped whenever the buffer is discarded for an account switch. Work in flight from the
+    /// previous account must not write anything after it.
+    private var sessionEpoch = 0
 
     /// Set while the legacy-deletion classification pass is running, so a second one can't start
     /// alongside it and process the same quarantine entries twice.
@@ -90,9 +96,12 @@ final class SyncCoordinator: @unchecked Sendable {
         CKRecordZone.ID(zoneName: zoneName, ownerName: CKCurrentUserDefaultName)
     }
 
-    /// Whether the given engine is the shared database engine (read-only, for receiving shared data)
+    /// Whether the given engine is the shared database engine (read-only, for receiving shared
+    /// data). Asked of the engine's own database rather than compared against `sharedSyncEngine`,
+    /// which is nil until `publishEngines`: an early callback would otherwise read as private and
+    /// skip every shared-engine gate.
     private func isSharedEngine(_ engine: CKSyncEngine) -> Bool {
-        engine === sharedSyncEngine
+        engine.database.databaseScope == .shared
     }
 
     /// Check if a record's ckRecordData indicates it originated from a shared zone (not the user's own private zone).
@@ -304,13 +313,13 @@ final class SyncCoordinator: @unchecked Sendable {
             deferredChanges.append(contentsOf: syncEngine.state.pendingRecordZoneChanges.map {
                 DeferredChange(target: .privateDatabase, change: $0)
             })
-            retiredEngines.insert(ObjectIdentifier(syncEngine))
+            retiredEngines[ObjectIdentifier(syncEngine)] = syncEngine
         }
         if let sharedSyncEngine {
             deferredChanges.append(contentsOf: sharedSyncEngine.state.pendingRecordZoneChanges.map {
                 DeferredChange(target: .sharedDatabase, change: $0)
             })
-            retiredEngines.insert(ObjectIdentifier(sharedSyncEngine))
+            retiredEngines[ObjectIdentifier(sharedSyncEngine)] = sharedSyncEngine
         }
         syncEngine = nil
         sharedSyncEngine = nil
@@ -399,6 +408,7 @@ final class SyncCoordinator: @unchecked Sendable {
         let discarded = deferredChanges.count
         deferredChanges.removeAll()
         saveDeferredChanges(deferredChanges)
+        sessionEpoch += 1
         deferredChangesLock.unlock()
         if discarded > 0 {
             logger.info("Discarded \(discarded) buffered change(s) belonging to the previous account")
@@ -426,8 +436,8 @@ final class SyncCoordinator: @unchecked Sendable {
         deferredChangesLock.lock()
         defer { deferredChangesLock.unlock() }
         guard generation == startGeneration else {
-            retiredEngines.insert(ObjectIdentifier(privateEngine))
-            retiredEngines.insert(ObjectIdentifier(sharedEngine))
+            retiredEngines[ObjectIdentifier(privateEngine)] = privateEngine
+            retiredEngines[ObjectIdentifier(sharedEngine)] = sharedEngine
             return false
         }
         return true
@@ -509,6 +519,13 @@ final class SyncCoordinator: @unchecked Sendable {
         deferredChangesLock.unlock()
     }
 
+    /// The current account session. A method for the same reason as `setScrubbing`.
+    private func currentSessionEpoch() -> Int {
+        deferredChangesLock.lock()
+        defer { deferredChangesLock.unlock() }
+        return sessionEpoch
+    }
+
     /// Add one record ID to the persisted quarantine, if it isn't already there.
     private func quarantineLegacySharedDeletion(_ recordID: CKRecord.ID) {
         var quarantined = loadLegacySharedDeletionQuarantine()
@@ -543,6 +560,8 @@ final class SyncCoordinator: @unchecked Sendable {
         // forceFullResync() to replace the engines underneath it, and a deletion put back on a
         // discarded engine is gone for good. enqueue lands it on whichever engine is current, or
         // buffers it when the restart is still in flight.
+        let epoch = currentSessionEpoch()
+
         Task.detached { [self, logger, legacySharedDeletionScrubKey] in
             var remaining = candidates
             var restored = 0
@@ -555,6 +574,14 @@ final class SyncCoordinator: @unchecked Sendable {
                         dropped += 1
                         logger.info("Dropped legacy shared deletion \(recordID.recordName) (\(record.recordType)) — per-user records never travel through the share")
                     } else {
+                        // These are the previous account's records. The switch already cleared the
+                        // buffer and the quarantine, so the pass stops without writing anything
+                        // rather than queueing one account's deletion against another's database.
+                        guard currentSessionEpoch() == epoch else {
+                            logger.info("Account switched mid-classification — abandoning the pass")
+                            setScrubbing(false)
+                            return
+                        }
                         enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
                         restored += 1
                     }
@@ -565,6 +592,11 @@ final class SyncCoordinator: @unchecked Sendable {
                     logger.info("Legacy shared deletion \(recordID.recordName) — record already gone from the server, dropping")
                 } catch {
                     logger.error("Could not classify legacy shared deletion \(recordID.recordName), staying quarantined: \(error.localizedDescription)")
+                }
+                guard currentSessionEpoch() == epoch else {
+                    logger.info("Account switched mid-classification — abandoning the pass")
+                    setScrubbing(false)
+                    return
                 }
                 // Persisted per candidate so an interrupted pass resumes from where it stopped.
                 // Anything the gate quarantined meanwhile is merged back rather than overwritten
@@ -846,7 +878,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         let engineLabel = isShared ? "shared" : "private"
 
         deferredChangesLock.lock()
-        let isRetired = retiredEngines.contains(ObjectIdentifier(engine))
+        let isRetired = retiredEngines[ObjectIdentifier(engine)] != nil
         deferredChangesLock.unlock()
         guard !isRetired else {
             logger.debug("[\(engineLabel)] Ignoring event from a retired engine")
@@ -913,6 +945,15 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     ) -> CKSyncEngine.RecordZoneChangeBatch? {
         let isShared = isSharedEngine(engine)
         let engineLabel = isShared ? "shared" : "private"
+
+        // Retired engines are retained, so one can still ask for a batch. It must never send.
+        deferredChangesLock.lock()
+        let isRetired = retiredEngines[ObjectIdentifier(engine)] != nil
+        deferredChangesLock.unlock()
+        guard !isRetired else {
+            logger.debug("[\(engineLabel)] Refusing to build a batch for a retired engine")
+            return nil
+        }
 
         let scope = context.options.scope
         let pendingChanges = engine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
