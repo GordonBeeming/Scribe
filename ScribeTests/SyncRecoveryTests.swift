@@ -121,4 +121,34 @@ struct SyncRecoveryTests {
         #expect(remainingIDs.contains(DashboardSection.defaultSummaryID))
         #expect(!remainingIDs.contains(foreignSectionID))
     }
+
+    /// A legacy shared deletion the server couldn't classify stays quarantined across launches, so
+    /// the identity that survives the round-trip has to be the whole record ID. Losing the zone or
+    /// the owner would send the retry at the wrong record.
+    @Test("The legacy deletion quarantine round-trips a full record ID through UserDefaults")
+    @MainActor
+    func quarantineRoundTripsRecordIDs() {
+        let coordinator = SyncCoordinator.shared
+        let first = CKRecord.ID(
+            recordName: "11111111-1111-1111-1111-111111111111",
+            zoneID: CKRecordZone.ID(zoneName: "ScribeBudgetZone", ownerName: "_someoneelse")
+        )
+        let second = CKRecord.ID(
+            recordName: "22222222-2222-2222-2222-222222222222",
+            zoneID: CKRecordZone.ID(zoneName: "OtherZone", ownerName: "_anotherowner")
+        )
+
+        coordinator.saveLegacySharedDeletionQuarantine([first, second])
+        let loaded = coordinator.loadLegacySharedDeletionQuarantine()
+
+        #expect(loaded.count == 2)
+        #expect(loaded.first == first)
+        #expect(loaded.last == second)
+        #expect(loaded.first?.zoneID.ownerName == "_someoneelse")
+        #expect(loaded.last?.zoneID.zoneName == "OtherZone")
+
+        // Emptying clears the key, which is what lets the scrub finally set its done flag.
+        coordinator.saveLegacySharedDeletionQuarantine([])
+        #expect(coordinator.loadLegacySharedDeletionQuarantine().isEmpty)
+    }
 }

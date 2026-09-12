@@ -18,6 +18,12 @@ final class SyncCoordinator: @unchecked Sendable {
     private let stateKey = "syncEngineState"
     private let sharedStateKey = "sharedSyncEngineState"
     private let legacySharedDeletionScrubKey = "didScrubLegacySharedDeletions"
+    private let legacySharedDeletionQuarantineKey = "legacySharedDeletionQuarantine"
+
+    /// The quarantine stores one entry per record ID: zone name, owner name and record name joined
+    /// by a newline. CloudKit allows none of the three to contain a newline, so the split back is
+    /// unambiguous for any ID we could be handed.
+    private static let quarantineFieldSeparator = "\n"
     private let zoneName = "ScribeBudgetZone"
 
     /// Settings that belong to one iCloud account rather than to the shared budget. They use
@@ -364,25 +370,40 @@ final class SyncCoordinator: @unchecked Sendable {
     /// the record is. Sending it blind would delete the owner's data.
     ///
     /// Every candidate leaves the captured engine's state immediately so nothing ships while we
-    /// check, then each is re-added through `enqueue` unless the server says it is a per-user
-    /// record or that it is already gone. The flag is set once the pass finishes, so this never
-    /// runs again on this device.
+    /// check, and is written to a persistent quarantine before any lookup runs, so a crash
+    /// mid-pass loses nothing. A candidate leaves the quarantine only once it is classified:
+    /// dropped when the server says it is a per-user record or that the record is already gone,
+    /// re-queued through `enqueue` when it is any other type. A lookup that fails for any other
+    /// reason leaves the deletion quarantined and the done flag unset, so the next engine
+    /// publication retries it. It must never be released unclassified: a custom section's UUID is
+    /// random, so the cheap guard can never recognise it and the deletion would reach the shared
+    /// zone and destroy the owner's section. The flag is set, and the pass stops running for good,
+    /// only when the quarantine is empty.
     private func scrubLegacySharedDeletionsIfNeeded(on sharedEngine: CKSyncEngine) {
         let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
-        guard defaults?.bool(forKey: legacySharedDeletionScrubKey) != true else { return }
+        let quarantined = loadLegacySharedDeletionQuarantine()
+        let alreadyScrubbed = defaults?.bool(forKey: legacySharedDeletionScrubKey) == true
+        guard !alreadyScrubbed || !quarantined.isEmpty else { return }
 
-        let candidates: [CKRecord.ID] = sharedEngine.state.pendingRecordZoneChanges.compactMap { change in
+        let pendingCandidates: [CKRecord.ID] = sharedEngine.state.pendingRecordZoneChanges.compactMap { change in
             guard case .deleteRecord(let recordID) = change,
                   recordID.zoneID.ownerName != CKCurrentUserDefaultName else { return nil }
             return recordID
         }
+
+        if !pendingCandidates.isEmpty {
+            sharedEngine.state.remove(pendingRecordZoneChanges: pendingCandidates.map { .deleteRecord($0) })
+        }
+
+        var seen: Set<CKRecord.ID> = []
+        let candidates = (pendingCandidates + quarantined).filter { seen.insert($0).inserted }
 
         guard !candidates.isEmpty else {
             defaults?.set(true, forKey: legacySharedDeletionScrubKey)
             return
         }
 
-        sharedEngine.state.remove(pendingRecordZoneChanges: candidates.map { .deleteRecord($0) })
+        saveLegacySharedDeletionQuarantine(candidates)
         logger.info("Scrubbing \(candidates.count) legacy shared deletion(s): withheld pending a type check")
 
         // Re-adds go through enqueue rather than the captured engine: this pass is long enough for
@@ -390,6 +411,7 @@ final class SyncCoordinator: @unchecked Sendable {
         // discarded engine is gone for good. enqueue lands it on whichever engine is current, or
         // buffers it when the restart is still in flight.
         Task.detached { [self, logger, legacySharedDeletionScrubKey] in
+            var remaining = candidates
             var restored = 0
             var dropped = 0
 
@@ -403,22 +425,57 @@ final class SyncCoordinator: @unchecked Sendable {
                         enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
                         restored += 1
                     }
+                    remaining.removeAll { $0 == recordID }
                 } catch let error as CKError where error.code == .unknownItem {
                     dropped += 1
+                    remaining.removeAll { $0 == recordID }
                     logger.info("Legacy shared deletion \(recordID.recordName) — record already gone from the server, dropping")
                 } catch {
-                    // Anything else is unknown, not per-user. A legitimate deletion must never be
-                    // lost to a network blip, so it goes back on the queue.
-                    enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
-                    restored += 1
-                    logger.error("Could not classify legacy shared deletion \(recordID.recordName), re-queued: \(error.localizedDescription)")
+                    logger.error("Could not classify legacy shared deletion \(recordID.recordName), staying quarantined: \(error.localizedDescription)")
                 }
+                // Persisted per candidate so an interrupted pass resumes from where it stopped.
+                saveLegacySharedDeletionQuarantine(remaining)
             }
 
-            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
-                .set(true, forKey: legacySharedDeletionScrubKey)
-            logger.info("Legacy shared deletion scrub complete: \(restored) re-queued, \(dropped) dropped")
+            if remaining.isEmpty {
+                UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
+                    .set(true, forKey: legacySharedDeletionScrubKey)
+                logger.info("Legacy shared deletion scrub complete: \(restored) re-queued, \(dropped) dropped")
+            } else {
+                logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, retrying on the next start (\(restored) re-queued, \(dropped) dropped)")
+            }
         }
+    }
+
+    /// Read the quarantined legacy deletions. Internal rather than private so the UserDefaults
+    /// round-trip can be tested without standing up a live sync engine.
+    func loadLegacySharedDeletionQuarantine() -> [CKRecord.ID] {
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        guard let entries = defaults?.stringArray(forKey: legacySharedDeletionQuarantineKey) else {
+            return []
+        }
+        return entries.compactMap { entry in
+            let parts = entry.components(separatedBy: Self.quarantineFieldSeparator)
+            guard parts.count == 3 else { return nil }
+            return CKRecord.ID(
+                recordName: parts[2],
+                zoneID: CKRecordZone.ID(zoneName: parts[0], ownerName: parts[1])
+            )
+        }
+    }
+
+    /// Replace the quarantined legacy deletions. Internal for the same reason as the loader.
+    func saveLegacySharedDeletionQuarantine(_ recordIDs: [CKRecord.ID]) {
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        guard !recordIDs.isEmpty else {
+            defaults?.removeObject(forKey: legacySharedDeletionQuarantineKey)
+            return
+        }
+        let entries = recordIDs.map { recordID in
+            [recordID.zoneID.zoneName, recordID.zoneID.ownerName, recordID.recordName]
+                .joined(separator: Self.quarantineFieldSeparator)
+        }
+        defaults?.set(entries, forKey: legacySharedDeletionQuarantineKey)
     }
 
     func pushChanges(for recordIDs: [CKRecord.ID]) {
