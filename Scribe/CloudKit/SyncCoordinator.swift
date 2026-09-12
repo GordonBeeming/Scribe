@@ -57,6 +57,19 @@ final class SyncCoordinator: @unchecked Sendable {
     private let deferredChangesLock = NSLock()
     private var deferredChanges: [DeferredChange] = []
 
+    /// Engines `stop()` has retired. `fetchAllChanges()` and the deletion scrub hold engine
+    /// references across a restart, so a discarded engine can still deliver events. Honouring a
+    /// `.stateUpdate` from one would write its stale serialization under the live key and
+    /// resurrect the very token a resync just dropped. Identity is matched rather than comparing
+    /// against the live engine, because an event can fire between `CKSyncEngine(...)` and
+    /// publication and must still be handled. A handful of identifiers per process, so it is never
+    /// pruned.
+    private var retiredEngines: Set<ObjectIdentifier> = []
+
+    /// Set while the legacy-deletion classification pass is running, so a second one can't start
+    /// alongside it and process the same quarantine entries twice.
+    private var isScrubbing = false
+
     /// The fixed UUIDs every device seeds per-user settings with. They are the only per-user
     /// records identifiable from a record name alone.
     private static let wellKnownPerUserIDs: Set<UUID> = [
@@ -199,7 +212,7 @@ final class SyncCoordinator: @unchecked Sendable {
             return
         }
 
-        reclaimPerUserRecords()
+        recoverHijackedPerUserRecords(reclaimPerUserRecords())
 
         Task {
             do {
@@ -256,10 +269,27 @@ final class SyncCoordinator: @unchecked Sendable {
         }
     }
 
-    /// Drops both engines. The buffer is deliberately left alone, so a forceFullResync() cycle
-    /// keeps whatever was queued and the restart drains it.
+    /// Drops both engines, rescuing whatever they still had queued into the buffer so the restart
+    /// drains it into the new engines.
+    ///
+    /// Saves would survive anyway, because `pushAllLocalData()` re-queues every local record after
+    /// a resync. Deletions would not: the model is already gone locally, so nothing walks it again
+    /// and the record stays on the server for good. Re-queued saves that duplicate what
+    /// `pushAllLocalData()` adds are harmless, since pending changes are a set.
     func stop() {
         deferredChangesLock.lock()
+        if let syncEngine {
+            deferredChanges.append(contentsOf: syncEngine.state.pendingRecordZoneChanges.map {
+                DeferredChange(target: .privateDatabase, change: $0)
+            })
+            retiredEngines.insert(ObjectIdentifier(syncEngine))
+        }
+        if let sharedSyncEngine {
+            deferredChanges.append(contentsOf: sharedSyncEngine.state.pendingRecordZoneChanges.map {
+                DeferredChange(target: .sharedDatabase, change: $0)
+            })
+            retiredEngines.insert(ObjectIdentifier(sharedSyncEngine))
+        }
         syncEngine = nil
         sharedSyncEngine = nil
         deferredChangesLock.unlock()
@@ -337,6 +367,19 @@ final class SyncCoordinator: @unchecked Sendable {
         deferredChangesLock.unlock()
     }
 
+    /// Throw away everything buffered. Only for an account switch: the buffered changes name
+    /// records in the previous account's zones, so draining them into the new account's engine
+    /// would push one person's data at another's store.
+    private func discardBufferedChanges() {
+        deferredChangesLock.lock()
+        let discarded = deferredChanges.count
+        deferredChanges.removeAll()
+        deferredChangesLock.unlock()
+        if discarded > 0 {
+            logger.info("Discarded \(discarded) buffered change(s) belonging to the previous account")
+        }
+    }
+
     /// Publish both engines and hand the buffered work over, all in one lock hold so no push can
     /// slip between the two and no `stop()` can discard an engine mid-handover.
     private func publishEngines(private privateEngine: CKSyncEngine, shared sharedEngine: CKSyncEngine) {
@@ -369,22 +412,19 @@ final class SyncCoordinator: @unchecked Sendable {
     /// deletion carries no record type, so the only way to classify one is to ask the server what
     /// the record is. Sending it blind would delete the owner's data.
     ///
-    /// Every candidate leaves the captured engine's state immediately so nothing ships while we
-    /// check, and is written to a persistent quarantine before any lookup runs, so a crash
-    /// mid-pass loses nothing. A candidate leaves the quarantine only once it is classified:
-    /// dropped when the server says it is a per-user record or that the record is already gone,
-    /// re-queued through `enqueue` when it is any other type. A lookup that fails for any other
-    /// reason leaves the deletion quarantined and the done flag unset, so the next engine
-    /// publication retries it. It must never be released unclassified: a custom section's UUID is
-    /// random, so the cheap guard can never recognise it and the deletion would reach the shared
-    /// zone and destroy the owner's section. The flag is set, and the pass stops running for good,
-    /// only when the quarantine is empty.
+    /// `nextRecordZoneChangeBatch` is the gate, not this pass. The engine is live from its
+    /// initialiser and can ask for a batch before `publishEngines(...)` runs, so withholding has to
+    /// happen where sends are actually assembled. This is the classifier: it works through whatever
+    /// the gate quarantined. A candidate leaves the quarantine only once classified — dropped when
+    /// the server says it is a per-user record or that the record is already gone, re-queued
+    /// through `enqueue` when it is any other type. A lookup that fails for any other reason leaves
+    /// it quarantined and the done flag unset, so the next publication retries it. The flag is set,
+    /// and the gate stops withholding, only when the quarantine is empty.
     private func scrubLegacySharedDeletionsIfNeeded(on sharedEngine: CKSyncEngine) {
-        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
-        let quarantined = loadLegacySharedDeletionQuarantine()
-        let alreadyScrubbed = defaults?.bool(forKey: legacySharedDeletionScrubKey) == true
-        guard !alreadyScrubbed || !quarantined.isEmpty else { return }
+        guard !legacySharedDeletionScrubIsDone || !loadLegacySharedDeletionQuarantine().isEmpty else { return }
 
+        // Collecting from the engine is belt-and-braces now the gate quarantines on the way out.
+        // It still catches anything queued before this build ever assembled a batch.
         let pendingCandidates: [CKRecord.ID] = sharedEngine.state.pendingRecordZoneChanges.compactMap { change in
             guard case .deleteRecord(let recordID) = change,
                   recordID.zoneID.ownerName != CKCurrentUserDefaultName else { return nil }
@@ -393,21 +433,60 @@ final class SyncCoordinator: @unchecked Sendable {
 
         if !pendingCandidates.isEmpty {
             sharedEngine.state.remove(pendingRecordZoneChanges: pendingCandidates.map { .deleteRecord($0) })
+            for recordID in pendingCandidates {
+                quarantineLegacySharedDeletion(recordID)
+            }
         }
 
-        var seen: Set<CKRecord.ID> = []
-        let candidates = (pendingCandidates + quarantined).filter { seen.insert($0).inserted }
+        runLegacySharedDeletionClassification()
+    }
 
-        guard !candidates.isEmpty else {
-            defaults?.set(true, forKey: legacySharedDeletionScrubKey)
+    /// Whether the legacy deletion pass has finished for good on this device.
+    private var legacySharedDeletionScrubIsDone: Bool {
+        UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
+            .bool(forKey: legacySharedDeletionScrubKey) == true
+    }
+
+    /// Flip the in-flight flag. A plain method rather than an inline lock because `NSLock.lock()`
+    /// is unavailable from an async context, and the classification pass clears this from one.
+    private func setScrubbing(_ value: Bool) {
+        deferredChangesLock.lock()
+        isScrubbing = value
+        deferredChangesLock.unlock()
+    }
+
+    /// Add one record ID to the persisted quarantine, if it isn't already there.
+    private func quarantineLegacySharedDeletion(_ recordID: CKRecord.ID) {
+        var quarantined = loadLegacySharedDeletionQuarantine()
+        guard !quarantined.contains(recordID) else { return }
+        quarantined.append(recordID)
+        saveLegacySharedDeletionQuarantine(quarantined)
+    }
+
+    /// Ask the server what each quarantined deletion refers to and act on the answer. Only one pass
+    /// runs at a time, so a gate that quarantines something while a pass is already working cannot
+    /// make two passes classify the same entries.
+    private func runLegacySharedDeletionClassification() {
+        let candidates = loadLegacySharedDeletionQuarantine()
+
+        deferredChangesLock.lock()
+        guard !isScrubbing else {
+            deferredChangesLock.unlock()
             return
         }
+        guard !candidates.isEmpty else {
+            deferredChangesLock.unlock()
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
+                .set(true, forKey: legacySharedDeletionScrubKey)
+            return
+        }
+        isScrubbing = true
+        deferredChangesLock.unlock()
 
-        saveLegacySharedDeletionQuarantine(candidates)
-        logger.info("Scrubbing \(candidates.count) legacy shared deletion(s): withheld pending a type check")
+        logger.info("Classifying \(candidates.count) quarantined legacy shared deletion(s)")
 
-        // Re-adds go through enqueue rather than the captured engine: this pass is long enough for
-        // a forceFullResync() to replace the engines underneath it, and a deletion put back on a
+        // Re-adds go through enqueue rather than a captured engine: this pass is long enough for a
+        // forceFullResync() to replace the engines underneath it, and a deletion put back on a
         // discarded engine is gone for good. enqueue lands it on whichever engine is current, or
         // buffers it when the restart is still in flight.
         Task.detached { [self, logger, legacySharedDeletionScrubKey] in
@@ -434,10 +513,16 @@ final class SyncCoordinator: @unchecked Sendable {
                     logger.error("Could not classify legacy shared deletion \(recordID.recordName), staying quarantined: \(error.localizedDescription)")
                 }
                 // Persisted per candidate so an interrupted pass resumes from where it stopped.
-                saveLegacySharedDeletionQuarantine(remaining)
+                // Anything the gate quarantined meanwhile is merged back rather than overwritten
+                // with this pass's stale view of the list.
+                let quarantinedMeanwhile = loadLegacySharedDeletionQuarantine()
+                    .filter { !candidates.contains($0) }
+                saveLegacySharedDeletionQuarantine(remaining + quarantinedMeanwhile)
             }
 
-            if remaining.isEmpty {
+            setScrubbing(false)
+
+            if loadLegacySharedDeletionQuarantine().isEmpty {
                 UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
                     .set(true, forKey: legacySharedDeletionScrubKey)
                 logger.info("Legacy shared deletion scrub complete: \(restored) re-queued, \(dropped) dropped")
@@ -649,6 +734,14 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         let isShared = isSharedEngine(engine)
         let engineLabel = isShared ? "shared" : "private"
 
+        deferredChangesLock.lock()
+        let isRetired = retiredEngines.contains(ObjectIdentifier(engine))
+        deferredChangesLock.unlock()
+        guard !isRetired else {
+            logger.debug("[\(engineLabel)] Ignoring event from a retired engine")
+            return
+        }
+
         switch event {
         case .stateUpdate(let stateUpdate):
             let key = isShared ? sharedStateKey : stateKey
@@ -662,6 +755,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 case .switchAccounts:
                     // Clear shared state on account switch
                     UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.removeObject(forKey: sharedStateKey)
+                    discardBufferedChanges()
                 default:
                     break
                 }
@@ -716,6 +810,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         var recordsToSave: [CKRecord] = []
         var recordIDsToDelete: [CKRecord.ID] = []
         var reclaimedPerUserCache = false
+        var quarantinedThisBatch = false
 
         /// Keep a per-user settings record out of the share. The shared engine must never send
         /// one, and a private-engine send whose cache points at the other account's zone is
@@ -724,6 +819,9 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         func handlePerUserRecord(_ recordID: CKRecord.ID, ckRecordData: Data?, clearCache: () -> Void) -> Bool {
             guard isShared else {
                 if isFromSharedZone(ckRecordData) {
+                    // Pushing the in-memory values is right here, unlike the launch-time reclaim: a
+                    // queued save means the user just edited this setting, so what is in memory is
+                    // their intent, not the other member's values that arrived through the share.
                     logger.info("[\(engineLabel)] Reclaiming per-user record \(recordID.recordName) from another owner's zone")
                     clearCache()
                     reclaimedPerUserCache = true
@@ -822,9 +920,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 // A deletion the old build queued on the shared engine for a hijacked per-user
                 // record would delete the owner's settings after the upgrade. Current routing
                 // never queues one, so this only catches what is already persisted in the engine
-                // state. Only the well-known IDs are recognisable here: a deletion carries no
-                // record type, and a custom section's random UUID is indistinguishable from any
-                // other record's, so one of those stays uncaught.
+                // state. This is the gate rather than the scrub, because the engine is live from
+                // its initialiser and can ask for a batch before publishEngines() gets to run.
+                //
+                // The well-known IDs are recognisable on sight and go straight in the bin.
                 if isShared,
                    let uuid = UUID(uuidString: recordID.recordName),
                    Self.wellKnownPerUserIDs.contains(uuid) {
@@ -832,10 +931,26 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     engine.state.remove(pendingRecordZoneChanges: [.deleteRecord(recordID)])
                     continue
                 }
+                // Any other foreign-zone deletion from before the scrub finished could be a custom
+                // section, whose random UUID tells us nothing. It is withheld and quarantined, and
+                // the classification pass asks the server what it actually is.
+                if isShared,
+                   recordID.zoneID.ownerName != CKCurrentUserDefaultName,
+                   !legacySharedDeletionScrubIsDone {
+                    logger.info("[\(engineLabel)] Quarantining unclassified legacy deletion \(recordID.recordName) instead of sending it")
+                    engine.state.remove(pendingRecordZoneChanges: [.deleteRecord(recordID)])
+                    quarantineLegacySharedDeletion(recordID)
+                    quarantinedThisBatch = true
+                    continue
+                }
                 recordIDsToDelete.append(recordID)
             @unknown default:
                 break
             }
+        }
+
+        if quarantinedThisBatch {
+            runLegacySharedDeletionClassification()
         }
 
         if reclaimedPerUserCache {
@@ -874,6 +989,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
             defaults?.removeObject(forKey: stateKey)
             defaults?.removeObject(forKey: sharedStateKey)
+            discardBufferedChanges()
 
         @unknown default:
             break
@@ -1626,22 +1742,28 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     /// members pushed them through their own private zones. The shared engine then delivered the
     /// owner's copies to the participant, which matched them by UUID and adopted the owner's zone
     /// into `ckRecordData` — from then on the participant's settings were written into the owner's
-    /// zone, and the two accounts overwrote each other's preferences. Any per-user record still
-    /// cached in a foreign zone is reset so it goes back out as this account's own record, and a
-    /// custom section that only exists because it leaked in through the share is removed.
+    /// zone, and the two accounts overwrote each other's preferences.
+    ///
+    /// A custom section that only exists because it leaked in through the share is deleted here and
+    /// now. A well-known record cannot be repaired synchronously: the values in memory may be the
+    /// *other* member's settings that arrived through the share, so pushing them as our own would
+    /// write their preferences over this account's private record. That record almost certainly
+    /// still exists on the server under the same fixed UUID, so `recoverHijackedPerUserRecords`
+    /// fetches it and adopts it. This returns the IDs it will look up, which is also what makes the
+    /// synchronous half testable without CloudKit.
     @MainActor
-    func reclaimPerUserRecords() {
-        guard let context = modelContainer?.mainContext else { return }
+    @discardableResult
+    func reclaimPerUserRecords() -> [CKRecord.ID] {
+        guard let context = modelContainer?.mainContext else { return [] }
 
         let defaultIDs = Self.wellKnownPerUserIDs
-        var reclaimedIDs: [CKRecord.ID] = []
+        var idsNeedingLookup: [CKRecord.ID] = []
         var deletedCount = 0
 
         if let preferences = try? context.fetch(FetchDescriptor<UserPreferences>()) {
             for pref in preferences where isFromSharedZone(pref.ckRecordData) {
                 if defaultIDs.contains(pref.id) {
-                    pref.ckRecordData = nil
-                    reclaimedIDs.append(CKRecord.ID(recordName: pref.id.uuidString, zoneID: zoneID))
+                    idsNeedingLookup.append(CKRecord.ID(recordName: pref.id.uuidString, zoneID: zoneID))
                 } else {
                     context.delete(pref)
                     deletedCount += 1
@@ -1652,8 +1774,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         if let sections = try? context.fetch(FetchDescriptor<DashboardSection>()) {
             for section in sections where isFromSharedZone(section.ckRecordData) {
                 if defaultIDs.contains(section.id) {
-                    section.ckRecordData = nil
-                    reclaimedIDs.append(CKRecord.ID(recordName: section.id.uuidString, zoneID: zoneID))
+                    idsNeedingLookup.append(CKRecord.ID(recordName: section.id.uuidString, zoneID: zoneID))
                 } else {
                     context.delete(section)
                     deletedCount += 1
@@ -1661,19 +1782,63 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             }
         }
 
-        guard !reclaimedIDs.isEmpty || deletedCount > 0 else { return }
+        guard !idsNeedingLookup.isEmpty || deletedCount > 0 else { return [] }
 
         do {
             try context.save()
         } catch {
             logger.error("Failed to save reclaimed per-user records: \(error.localizedDescription)")
-            return
+            return []
         }
 
-        if !reclaimedIDs.isEmpty {
-            pushChanges(for: reclaimedIDs)
+        logger.info("Per-user reclaim: \(idsNeedingLookup.count) hijacked record(s) to recover, deleted \(deletedCount) that leaked in through the share")
+        return idsNeedingLookup
+    }
+
+    /// Second half of the reclaim: fetch this account's own private-zone copy of each hijacked
+    /// per-user record and adopt it, so the settings we keep are ours rather than the ones that
+    /// arrived through the share.
+    ///
+    /// Found -> apply it, which both takes the server's values and re-caches the private-zone
+    /// record, and that is the repair. `.unknownItem` -> we never had a private copy, so clearing
+    /// the cache and pushing what is in memory is the best available answer. Any other error leaves
+    /// the record untouched with its foreign cache intact, so the next launch tries again; a
+    /// half-repair here would be indistinguishable from the hijack itself.
+    func recoverHijackedPerUserRecords(_ recordIDs: [CKRecord.ID]) {
+        guard !recordIDs.isEmpty else { return }
+
+        Task.detached { [self, logger] in
+            for recordID in recordIDs {
+                do {
+                    let record = try await CloudKitManager.shared.privateDatabase.record(for: recordID)
+                    await MainActor.run {
+                        guard let context = modelContainer?.mainContext else { return }
+                        applyFetchedRecord(record, to: context, pending: PendingChangeNames())
+                        do {
+                            try context.save()
+                        } catch {
+                            logger.error("Failed to save recovered per-user record \(recordID.recordName): \(error.localizedDescription)")
+                        }
+                    }
+                    logger.info("Recovered per-user record \(recordID.recordName) from our own private zone")
+                } catch let error as CKError where error.code == .unknownItem {
+                    await MainActor.run {
+                        guard let context = modelContainer?.mainContext else { return }
+                        clearCKRecordData(for: recordID, in: context)
+                        do {
+                            try context.save()
+                        } catch {
+                            logger.error("Failed to clear hijacked cache for \(recordID.recordName): \(error.localizedDescription)")
+                            return
+                        }
+                        pushChanges(for: [recordID])
+                    }
+                    logger.info("No private copy of \(recordID.recordName) on the server — pushing the local values as a fresh record")
+                } catch {
+                    logger.error("Could not recover per-user record \(recordID.recordName), leaving it for the next launch: \(error.localizedDescription)")
+                }
+            }
         }
-        logger.info("Reclaimed \(reclaimedIDs.count) per-user record(s) into our own zone, deleted \(deletedCount) that leaked in through the share")
     }
 
     /// Force a full resync — the "Unstuck" recovery action.

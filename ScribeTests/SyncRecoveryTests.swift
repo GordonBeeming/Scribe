@@ -68,9 +68,11 @@ struct SyncRecoveryTests {
 
     /// Both accounts push UserPreferences and the two default DashboardSections under the same
     /// fixed UUIDs, so the owner's copies arrived through the share and rewrote the participant's
-    /// cached zone. Reclaiming resets the shared-identity records to this account's own and drops
-    /// the other account's custom sections, which only exist locally because they leaked in.
-    @Test("reclaimPerUserRecords clears hijacked caches and deletes foreign custom sections")
+    /// cached zone. The synchronous half of the reclaim deletes the other account's custom sections
+    /// and reports which well-known records need their private-zone copy fetched. It deliberately
+    /// does *not* clear those caches: the in-memory values may be the other member's, so the repair
+    /// has to come from the server, which needs CloudKit and so is out of reach here.
+    @Test("reclaimPerUserRecords deletes foreign custom sections and reports the records to recover")
     @MainActor
     func reclaimPerUserRecordsRepairsHijackedSettings() throws {
         let container = try Self.makeContainer()
@@ -112,11 +114,17 @@ struct SyncRecoveryTests {
 
         // start() returns before touching CloudKit under test, so the reclaim runs directly.
         SyncCoordinator.shared.start(with: container)
-        SyncCoordinator.shared.reclaimPerUserRecords()
+        let toRecover = SyncCoordinator.shared.reclaimPerUserRecords()
 
-        #expect(preferences.ckRecordData == nil)
-        #expect(defaultSection.ckRecordData == nil)
+        // Both well-known records are reported for a private-zone lookup, in our own zone.
+        let recoverNames = Set(toRecover.map(\.recordName))
+        #expect(recoverNames == [
+            UserPreferences.sharedID.uuidString,
+            DashboardSection.defaultSummaryID.uuidString
+        ])
+        #expect(toRecover.allSatisfy { $0.zoneID.ownerName == CKCurrentUserDefaultName })
 
+        // The foreign custom section is gone; the well-known one is kept for the lookup to repair.
         let remainingIDs = try context.fetch(FetchDescriptor<DashboardSection>()).map(\.id)
         #expect(remainingIDs.contains(DashboardSection.defaultSummaryID))
         #expect(!remainingIDs.contains(foreignSectionID))
