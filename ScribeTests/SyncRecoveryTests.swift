@@ -159,4 +159,51 @@ struct SyncRecoveryTests {
         coordinator.saveLegacySharedDeletionQuarantine([])
         #expect(coordinator.loadLegacySharedDeletionQuarantine().isEmpty)
     }
+
+    /// A push made before the engines exist only lives in the buffer, so the buffer has to survive
+    /// termination: a lost deletion is never retried, because nothing walks a deleted model again.
+    /// Which engine and which kind both have to come back, or the change lands in the wrong
+    /// database or as the wrong operation.
+    @Test("The deferred change buffer round-trips target and kind through UserDefaults")
+    @MainActor
+    func deferredChangesRoundTripThroughUserDefaults() {
+        let coordinator = SyncCoordinator.shared
+        let saveID = CKRecord.ID(
+            recordName: "33333333-3333-3333-3333-333333333333",
+            zoneID: CKRecordZone.ID(zoneName: "ScribeBudgetZone", ownerName: CKCurrentUserDefaultName)
+        )
+        let deleteID = CKRecord.ID(
+            recordName: "44444444-4444-4444-4444-444444444444",
+            zoneID: CKRecordZone.ID(zoneName: "ScribeBudgetZone", ownerName: "_someoneelse")
+        )
+
+        coordinator.saveDeferredChanges([
+            SyncCoordinator.DeferredChange(target: .privateDatabase, change: .saveRecord(saveID)),
+            SyncCoordinator.DeferredChange(target: .sharedDatabase, change: .deleteRecord(deleteID))
+        ])
+        let loaded = coordinator.loadDeferredChanges()
+
+        #expect(loaded.count == 2)
+        #expect(loaded.first?.target == .privateDatabase)
+        #expect(loaded.last?.target == .sharedDatabase)
+
+        if case .saveRecord(let id) = loaded.first?.change {
+            #expect(id == saveID)
+            #expect(id.zoneID.ownerName == CKCurrentUserDefaultName)
+        } else {
+            Issue.record("First entry should have come back as a save")
+        }
+
+        if case .deleteRecord(let id) = loaded.last?.change {
+            #expect(id == deleteID)
+            #expect(id.zoneID.ownerName == "_someoneelse")
+        } else {
+            Issue.record("Second entry should have come back as a deletion")
+        }
+
+        coordinator.saveDeferredChanges([])
+        #expect(coordinator.loadDeferredChanges().isEmpty)
+        #expect(UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
+            .object(forKey: "deferredRecordZoneChanges") == nil)
+    }
 }

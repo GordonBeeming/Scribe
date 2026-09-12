@@ -19,6 +19,7 @@ final class SyncCoordinator: @unchecked Sendable {
     private let sharedStateKey = "sharedSyncEngineState"
     private let legacySharedDeletionScrubKey = "didScrubLegacySharedDeletions"
     private let legacySharedDeletionQuarantineKey = "legacySharedDeletionQuarantine"
+    private let deferredChangesKey = "deferredRecordZoneChanges"
 
     /// The quarantine stores one entry per record ID: zone name, owner name and record name joined
     /// by a newline. CloudKit allows none of the three to contain a newline, so the split back is
@@ -37,10 +38,12 @@ final class SyncCoordinator: @unchecked Sendable {
     /// A push queued before the engines existed. `start(with:)` builds them asynchronously
     /// after an account-status check, so without this buffer every launch-time push is added
     /// to a nil engine and silently lost.
-    private struct DeferredChange {
-        enum Target {
-            case privateDatabase
-            case sharedDatabase
+    /// Internal rather than private so the UserDefaults round-trip can be tested without standing
+    /// up a live sync engine.
+    struct DeferredChange {
+        enum Target: String {
+            case privateDatabase = "private"
+            case sharedDatabase = "shared"
         }
 
         let target: Target
@@ -69,6 +72,11 @@ final class SyncCoordinator: @unchecked Sendable {
     /// Set while the legacy-deletion classification pass is running, so a second one can't start
     /// alongside it and process the same quarantine entries twice.
     private var isScrubbing = false
+
+    /// Bumped by every `start(with:)`. An earlier account-status check can still be awaiting when a
+    /// resync starts another, and whichever finishes last would otherwise publish over the other's
+    /// engines, orphaning them with their pending changes still aboard.
+    private var startGeneration = 0
 
     /// The fixed UUIDs every device seeds per-user settings with. They are the only per-user
     /// records identifiable from a record name alone.
@@ -199,7 +207,12 @@ final class SyncCoordinator: @unchecked Sendable {
     @MainActor
     private var pendingResyncPush = false
 
-    private init() {}
+    private init() {
+        // The buffer outlives the process: a push made before the engines exist is only in memory
+        // until it drains, and a termination in that window would lose a deletion for good, since
+        // nothing walks a deleted model again on the next ordinary launch.
+        deferredChanges = loadDeferredChanges()
+    }
 
     // MARK: - Lifecycle
 
@@ -213,6 +226,11 @@ final class SyncCoordinator: @unchecked Sendable {
         }
 
         recoverHijackedPerUserRecords(reclaimPerUserRecords())
+
+        deferredChangesLock.lock()
+        startGeneration += 1
+        let generation = startGeneration
+        deferredChangesLock.unlock()
 
         Task {
             do {
@@ -250,6 +268,10 @@ final class SyncCoordinator: @unchecked Sendable {
                 )
                 let sharedEngine = CKSyncEngine(sharedConfig)
 
+                guard self.claimPublication(generation: generation, private: engine, shared: sharedEngine) else {
+                    logger.info("Discarding engines from a superseded start")
+                    return
+                }
                 self.publishEngines(private: engine, shared: sharedEngine)
 
                 // Engines now exist — run a resync re-upload if one was requested.
@@ -292,6 +314,7 @@ final class SyncCoordinator: @unchecked Sendable {
         }
         syncEngine = nil
         sharedSyncEngine = nil
+        saveDeferredChanges(deferredChanges)
         deferredChangesLock.unlock()
     }
 
@@ -359,6 +382,7 @@ final class SyncCoordinator: @unchecked Sendable {
         guard let engine = target == .privateDatabase ? syncEngine : sharedSyncEngine else {
             deferredChanges.append(contentsOf: changes.map { DeferredChange(target: target, change: $0) })
             let buffered = deferredChanges.count
+            saveDeferredChanges(deferredChanges)
             deferredChangesLock.unlock()
             logger.info("Deferred \(changes.count) change(s) for the \(label) engine until it starts (\(buffered) buffered)")
             return
@@ -374,10 +398,39 @@ final class SyncCoordinator: @unchecked Sendable {
         deferredChangesLock.lock()
         let discarded = deferredChanges.count
         deferredChanges.removeAll()
+        saveDeferredChanges(deferredChanges)
         deferredChangesLock.unlock()
         if discarded > 0 {
             logger.info("Discarded \(discarded) buffered change(s) belonging to the previous account")
         }
+    }
+
+    /// Drop the one-off migration state on an account switch. The done flag and the quarantine are
+    /// not account-scoped: the previous account's flag would skip the new account's scrub entirely,
+    /// and a leftover quarantine entry would be classified against the wrong shared database.
+    private func discardMigrationState() {
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        defaults?.removeObject(forKey: legacySharedDeletionScrubKey)
+        defaults?.removeObject(forKey: legacySharedDeletionQuarantineKey)
+    }
+
+    /// Whether this start attempt is still the current one and may publish its engines. A newer
+    /// `start(with:)` wins, and the superseded attempt's engines are retired on the spot so their
+    /// events are ignored rather than racing the live pair. A method rather than an inline lock
+    /// because `NSLock.lock()` is unavailable from the async context this runs in.
+    private func claimPublication(
+        generation: Int,
+        private privateEngine: CKSyncEngine,
+        shared sharedEngine: CKSyncEngine
+    ) -> Bool {
+        deferredChangesLock.lock()
+        defer { deferredChangesLock.unlock() }
+        guard generation == startGeneration else {
+            retiredEngines.insert(ObjectIdentifier(privateEngine))
+            retiredEngines.insert(ObjectIdentifier(sharedEngine))
+            return false
+        }
+        return true
     }
 
     /// Publish both engines and hand the buffered work over, all in one lock hold so no push can
@@ -388,6 +441,7 @@ final class SyncCoordinator: @unchecked Sendable {
         sharedSyncEngine = sharedEngine
         let buffered = deferredChanges
         deferredChanges.removeAll()
+        saveDeferredChanges(deferredChanges)
 
         let privateChanges = buffered.filter { $0.target == .privateDatabase }.map(\.change)
         let sharedChanges = buffered.filter { $0.target == .sharedDatabase }.map(\.change)
@@ -530,6 +584,63 @@ final class SyncCoordinator: @unchecked Sendable {
                 logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, retrying on the next start (\(restored) re-queued, \(dropped) dropped)")
             }
         }
+    }
+
+    /// Read the persisted deferred changes. Internal rather than private so the UserDefaults
+    /// round-trip can be tested without standing up a live sync engine.
+    func loadDeferredChanges() -> [DeferredChange] {
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        guard let entries = defaults?.stringArray(forKey: deferredChangesKey) else { return [] }
+        return entries.compactMap { entry in
+            let parts = entry.components(separatedBy: Self.quarantineFieldSeparator)
+            guard parts.count == 5, let target = DeferredChange.Target(rawValue: parts[0]) else {
+                return nil
+            }
+            let recordID = CKRecord.ID(
+                recordName: parts[4],
+                zoneID: CKRecordZone.ID(zoneName: parts[2], ownerName: parts[3])
+            )
+            let change: CKSyncEngine.PendingRecordZoneChange
+            switch parts[1] {
+            case "save": change = .saveRecord(recordID)
+            case "delete": change = .deleteRecord(recordID)
+            default: return nil
+            }
+            return DeferredChange(target: target, change: change)
+        }
+    }
+
+    /// Replace the persisted deferred changes. Internal for the same reason as the loader.
+    /// Callers that mutate `deferredChanges` already hold `deferredChangesLock`, so this must not
+    /// take it: `NSLock` is not recursive.
+    func saveDeferredChanges(_ changes: [DeferredChange]) {
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        guard !changes.isEmpty else {
+            defaults?.removeObject(forKey: deferredChangesKey)
+            return
+        }
+        let entries: [String] = changes.compactMap { deferred in
+            let kind: String
+            let recordID: CKRecord.ID
+            switch deferred.change {
+            case .saveRecord(let id):
+                kind = "save"
+                recordID = id
+            case .deleteRecord(let id):
+                kind = "delete"
+                recordID = id
+            @unknown default:
+                return nil
+            }
+            return [
+                deferred.target.rawValue,
+                kind,
+                recordID.zoneID.zoneName,
+                recordID.zoneID.ownerName,
+                recordID.recordName
+            ].joined(separator: Self.quarantineFieldSeparator)
+        }
+        defaults?.set(entries, forKey: deferredChangesKey)
     }
 
     /// Read the quarantined legacy deletions. Internal rather than private so the UserDefaults
@@ -756,6 +867,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     // Clear shared state on account switch
                     UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.removeObject(forKey: sharedStateKey)
                     discardBufferedChanges()
+                    discardMigrationState()
                 default:
                     break
                 }
@@ -990,6 +1102,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             defaults?.removeObject(forKey: stateKey)
             defaults?.removeObject(forKey: sharedStateKey)
             discardBufferedChanges()
+            discardMigrationState()
 
         @unknown default:
             break
