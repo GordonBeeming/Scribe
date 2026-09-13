@@ -51,6 +51,13 @@ final class SyncCoordinator: @unchecked Sendable {
         let change: CKSyncEngine.PendingRecordZoneChange
     }
 
+    /// Guards everything that decides where a change goes and whether it is still wanted: the
+    /// buffer, the in-flight deletions, the two engine properties, the handover of changes to an
+    /// engine, the session epoch, the legacy-deletion quarantine and its done flag. One lock rather
+    /// than several because those last few have to agree with each other — the quarantine's done
+    /// flag must only be set on a list observed empty in the same breath. No holder of this lock
+    /// takes another or calls back into a method that takes it; keep it that way.
+    ///
     /// Guards the buffer, the two engine properties, *and* the handover of changes to an engine.
     /// Reading the engine and buffering have to be atomic, or a push can read a nil engine, lose
     /// the race to the drain, and sit buffered until the next launch. Handing changes over has to
@@ -244,8 +251,6 @@ final class SyncCoordinator: @unchecked Sendable {
             return
         }
 
-        recoverHijackedPerUserRecords(reclaimPerUserRecords())
-
         deferredChangesLock.lock()
         startGeneration += 1
         let generation = startGeneration
@@ -276,11 +281,24 @@ final class SyncCoordinator: @unchecked Sendable {
                         logger.info("iCloud account changed since the last launch — discarding the previous account's buffered work")
                         discardBufferedChanges()
                         discardMigrationState()
+                        // The state tokens describe the previous account's zones, exactly as the
+                        // .switchAccounts path assumes. They have to go before the engines are
+                        // built from them.
+                        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+                        defaults?.removeObject(forKey: stateKey)
+                        defaults?.removeObject(forKey: sharedStateKey)
                     }
                     saveLastKnownUserRecordName(userRecordName)
                 } catch {
                     logger.error("Could not confirm the iCloud account, not publishing engines: \(error.localizedDescription)")
                     return
+                }
+
+                // Only now that we know whose account this is: the reclaim reads and rewrites this
+                // account's per-user settings, so running it before the check could repair one
+                // account's records against another's server data.
+                await MainActor.run {
+                    recoverHijackedPerUserRecords(reclaimPerUserRecords())
                 }
 
                 // Private database engine (owns the data, reads + writes)
@@ -352,7 +370,7 @@ final class SyncCoordinator: @unchecked Sendable {
         inFlightDeletions.removeAll()
         syncEngine = nil
         sharedSyncEngine = nil
-        saveDeferredChanges(deferredChanges)
+        persistUnsentWork()
         deferredChangesLock.unlock()
     }
 
@@ -431,7 +449,7 @@ final class SyncCoordinator: @unchecked Sendable {
         guard let engine = target == .privateDatabase ? syncEngine : sharedSyncEngine else {
             deferredChanges.append(contentsOf: changes.map { DeferredChange(target: target, change: $0) })
             let buffered = deferredChanges.count
-            saveDeferredChanges(deferredChanges)
+            persistUnsentWork()
             deferredChangesLock.unlock()
             logger.info("Deferred \(changes.count) change(s) for the \(label) engine until it starts (\(buffered) buffered)")
             return
@@ -445,9 +463,10 @@ final class SyncCoordinator: @unchecked Sendable {
     /// would push one person's data at another's store.
     private func discardBufferedChanges() {
         deferredChangesLock.lock()
-        let discarded = deferredChanges.count
+        let discarded = deferredChanges.count + inFlightDeletions.count
         deferredChanges.removeAll()
-        saveDeferredChanges(deferredChanges)
+        inFlightDeletions.removeAll()
+        persistUnsentWork()
         sessionEpoch += 1
         deferredChangesLock.unlock()
         if discarded > 0 {
@@ -459,9 +478,11 @@ final class SyncCoordinator: @unchecked Sendable {
     /// not account-scoped: the previous account's flag would skip the new account's scrub entirely,
     /// and a leftover quarantine entry would be classified against the wrong shared database.
     private func discardMigrationState() {
+        deferredChangesLock.lock()
         let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
         defaults?.removeObject(forKey: legacySharedDeletionScrubKey)
         defaults?.removeObject(forKey: legacySharedDeletionQuarantineKey)
+        deferredChangesLock.unlock()
     }
 
     /// Whether this start attempt is still the current one and may publish its engines. A newer
@@ -491,7 +512,7 @@ final class SyncCoordinator: @unchecked Sendable {
         sharedSyncEngine = sharedEngine
         let buffered = deferredChanges
         deferredChanges.removeAll()
-        saveDeferredChanges(deferredChanges)
+        persistUnsentWork()
 
         let privateChanges = buffered.filter { $0.target == .privateDatabase }.map(\.change)
         let sharedChanges = buffered.filter { $0.target == .sharedDatabase }.map(\.change)
@@ -575,46 +596,78 @@ final class SyncCoordinator: @unchecked Sendable {
         return sessionEpoch
     }
 
-    /// Record deletions handed to an engine, so `stop()` can rescue any the server never confirmed.
+    /// Persist everything that still has to reach a server: the buffer plus deletions handed to an
+    /// engine but not yet confirmed. Being killed mid-request would otherwise lose the deletion
+    /// entirely — it is gone from the engine's pending list and its model is already deleted, so
+    /// nothing walks it again and the record lives on the server for ever. Reloaded entries all
+    /// become buffered work, and re-deleting an already-deleted record comes back as
+    /// `.unknownItem`, which the sent handler already treats as done.
+    ///
+    /// Callers hold `deferredChangesLock`.
+    private func persistUnsentWork() {
+        saveDeferredChanges(deferredChanges + inFlightDeletions)
+    }
+
+    /// Record deletions handed to an engine, so `stop()` or a relaunch can rescue any the server
+    /// never confirmed.
     private func trackInFlightDeletions(_ recordIDs: [CKRecord.ID], target: DeferredChange.Target) {
         guard !recordIDs.isEmpty else { return }
         deferredChangesLock.lock()
         inFlightDeletions.append(contentsOf: recordIDs.map {
             DeferredChange(target: target, change: .deleteRecord($0))
         })
+        persistUnsentWork()
         deferredChangesLock.unlock()
     }
 
     /// Forget deletions the server has now answered for, whether it accepted them or refused them.
-    /// A refusal leaves the change back on the engine, which retries it itself.
-    private func clearInFlightDeletions(_ recordIDs: [CKRecord.ID]) {
+    /// A refusal leaves the change back on the engine, which retries it itself. Matched on the full
+    /// record ID and the database it went to, since the same record name can exist in two zones.
+    private func clearInFlightDeletions(_ recordIDs: [CKRecord.ID], target: DeferredChange.Target) {
         guard !recordIDs.isEmpty else { return }
-        let names = Set(recordIDs.map(\.recordName))
+        let answered = Set(recordIDs)
         deferredChangesLock.lock()
         inFlightDeletions.removeAll { deferred in
-            guard case .deleteRecord(let id) = deferred.change else { return false }
-            return names.contains(id.recordName)
+            guard deferred.target == target,
+                  case .deleteRecord(let id) = deferred.change else { return false }
+            return answered.contains(id)
         }
+        persistUnsentWork()
         deferredChangesLock.unlock()
     }
 
-    /// Serialises the quarantine's read-modify-write cycles. The gate runs on the engine's queue
-    /// and the classification pass in a detached task, so without this a gate insert landing
-    /// between a pass's load and save is dropped, the following empty check sets the done flag,
-    /// and an unclassified deletion ships.
-    private let quarantineLock = NSLock()
+    /// What a quarantine mutation did.
+    private enum QuarantineOutcome {
+        /// A different account session claimed the coordinator; nothing was written.
+        case stale
+        case written(isEmpty: Bool)
+    }
 
-    /// Apply a change to the persisted quarantine as one atomic read-modify-write. Returns whether
-    /// the quarantine is empty afterwards, so a caller deciding the done flag reads the same
-    /// snapshot it just wrote.
+    /// Apply a change to the persisted quarantine as one atomic read-modify-write. With
+    /// `ifSessionEpoch` the account check is part of the same critical section; with
+    /// `markDoneWhenEmpty` so is the done-flag write, so the flag can only ever be set on a list
+    /// this call has just observed empty.
     @discardableResult
-    private func mutateQuarantine(_ body: (inout [CKRecord.ID]) -> Void) -> Bool {
-        quarantineLock.lock()
-        defer { quarantineLock.unlock() }
+    private func mutateQuarantine(
+        ifSessionEpoch: Int? = nil,
+        markDoneWhenEmpty: Bool = false,
+        _ body: (inout [CKRecord.ID]) -> Void
+    ) -> QuarantineOutcome {
+        deferredChangesLock.lock()
+        defer { deferredChangesLock.unlock() }
+
+        if let ifSessionEpoch, ifSessionEpoch != sessionEpoch { return .stale }
+
         var quarantined = loadLegacySharedDeletionQuarantine()
         body(&quarantined)
         saveLegacySharedDeletionQuarantine(quarantined)
-        return quarantined.isEmpty
+
+        let isEmpty = quarantined.isEmpty
+        if markDoneWhenEmpty && isEmpty {
+            UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
+                .set(true, forKey: legacySharedDeletionScrubKey)
+        }
+        return .written(isEmpty: isEmpty)
     }
 
     /// Add one record ID to the persisted quarantine, if it isn't already there.
@@ -623,6 +676,23 @@ final class SyncCoordinator: @unchecked Sendable {
             guard !quarantined.contains(recordID) else { return }
             quarantined.append(recordID)
         }
+    }
+
+    /// Withhold a foreign-zone deletion unless the migration has already finished. Reading the flag
+    /// and inserting share one lock hold, so an insert can never land just after a concurrent flag
+    /// write and be forgotten. Returns true when the deletion was withheld.
+    private func withholdLegacySharedDeletion(_ recordID: CKRecord.ID) -> Bool {
+        deferredChangesLock.lock()
+        defer { deferredChangesLock.unlock() }
+
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        guard defaults?.bool(forKey: legacySharedDeletionScrubKey) != true else { return false }
+
+        var quarantined = loadLegacySharedDeletionQuarantine()
+        guard !quarantined.contains(recordID) else { return true }
+        quarantined.append(recordID)
+        saveLegacySharedDeletionQuarantine(quarantined)
+        return true
     }
 
     /// Ask the server what each quarantined deletion refers to and act on the answer. Only one pass
@@ -653,7 +723,7 @@ final class SyncCoordinator: @unchecked Sendable {
         // buffers it when the restart is still in flight.
         let epoch = currentSessionEpoch()
 
-        Task.detached { [self, logger, legacySharedDeletionScrubKey] in
+        Task.detached { [self, logger] in
             var remaining = candidates
             // Real deletions are held here rather than enqueued as they are classified. While the
             // done flag is still false the gate would quarantine each one straight back, and the
@@ -691,7 +761,7 @@ final class SyncCoordinator: @unchecked Sendable {
                 // Dropping just the one classified ID, rather than rewriting the whole list, is
                 // what keeps anything the gate quarantined meanwhile.
                 if !remaining.contains(recordID) {
-                    mutateQuarantine { quarantined in
+                    mutateQuarantine(ifSessionEpoch: epoch) { quarantined in
                         quarantined.removeAll { $0 == recordID }
                     }
                 }
@@ -699,28 +769,25 @@ final class SyncCoordinator: @unchecked Sendable {
 
             setScrubbing(false)
 
-            guard currentSessionEpoch() == epoch else {
-                logger.info("Account switched mid-classification — abandoning the pass")
-                return
-            }
-
-            // The park and the emptiness check are one atomic step, so the done flag is decided on
-            // the same snapshot that was just written. Anything still unclassified means the gate
-            // is still withholding, so the confirmed deletions are parked for a later pass.
-            let quarantineIsEmpty = mutateQuarantine { quarantined in
+            // The account check, the park and the done-flag write are one atomic step, so the flag
+            // can only be set on a list this call observed empty in the same breath. Anything still
+            // unclassified means the gate is still withholding, so the confirmed deletions are
+            // parked for a later pass.
+            let outcome = mutateQuarantine(ifSessionEpoch: epoch, markDoneWhenEmpty: true) { quarantined in
                 guard !quarantined.isEmpty else { return }
                 quarantined.append(contentsOf: toRestore.filter { !quarantined.contains($0) })
             }
 
-            if quarantineIsEmpty {
-                // Flag first, so the gate stops withholding before these go back on the queue.
-                UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
-                    .set(true, forKey: legacySharedDeletionScrubKey)
+            switch outcome {
+            case .stale:
+                logger.info("Account switched mid-classification — abandoning the pass")
+            case .written(let isEmpty) where isEmpty:
+                // The flag is already set, so the gate lets these through now.
                 for recordID in toRestore {
                     enqueue([.deleteRecord(recordID)], to: .sharedDatabase, ifSessionEpoch: epoch)
                 }
                 logger.info("Legacy shared deletion scrub complete: \(restored) re-queued, \(dropped) dropped")
-            } else {
+            case .written:
                 logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, \(toRestore.count) confirmed deletion(s) parked, retrying on the next start (\(dropped) dropped)")
             }
         }
@@ -1223,10 +1290,9 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 // the classification pass asks the server what it actually is.
                 if isShared,
                    recordID.zoneID.ownerName != CKCurrentUserDefaultName,
-                   !legacySharedDeletionScrubIsDone {
+                   withholdLegacySharedDeletion(recordID) {
                     logger.info("[\(engineLabel)] Quarantining unclassified legacy deletion \(recordID.recordName) instead of sending it")
                     engine.state.remove(pendingRecordZoneChanges: [.deleteRecord(recordID)])
-                    quarantineLegacySharedDeletion(recordID)
                     quarantinedThisBatch = true
                     continue
                 }
@@ -1920,8 +1986,8 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
         // The server has answered for these, either way: an accepted deletion is done, and a
         // refused one is back on the engine, which retries it itself.
-        clearInFlightDeletions(changes.deletedRecordIDs)
-        clearInFlightDeletions(changes.failedRecordDeletes.map(\.key))
+        clearInFlightDeletions(changes.deletedRecordIDs, target: targetDatabase)
+        clearInFlightDeletions(changes.failedRecordDeletes.map(\.key), target: targetDatabase)
 
         let pending = pendingChangeNames()
 
@@ -2130,15 +2196,22 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                         }
                         guard let context = modelContainer?.mainContext else { return }
 
-                        // The hijack we are repairing happened under a build that cached system
-                        // fields only, so there is usually no ancestor to diff a local edit
-                        // against. Merging anyway degenerates to whole-record last-writer-wins and
-                        // the other member's values can win, reinstating the hijack. Adopting the
-                        // private copy wholesale is the only answer that cannot; an edit made
-                        // during the second the lookup takes is superseded.
+                        // With a usable ancestor, always merge: the private-engine path removes the
+                        // pending save before handing the record here, so relying on engine state
+                        // would drop a genuine local edit. Merging costs nothing when there is no
+                        // edit, because every key of an unchanged model resolves to the server's
+                        // value against that same ancestor.
+                        //
+                        // Without one — the usual case, since the hijack happened under a build
+                        // that cached system fields only — merging would degenerate to whole-record
+                        // last-writer-wins and the other member's values could win, reinstating the
+                        // hijack. Adopting the private copy wholesale is the only answer that
+                        // cannot; an edit made during the second the lookup takes is superseded.
                         var pending = pendingChangeNames()
                         let cached = cachedRecord(forRecordName: recordID.recordName, in: context)
-                        if !RecordMerge.hasUsableAncestor(cached) {
+                        if RecordMerge.hasUsableAncestor(cached) {
+                            pending.saves.insert(recordID.recordName)
+                        } else {
                             pending.saves.remove(recordID.recordName)
                         }
 
