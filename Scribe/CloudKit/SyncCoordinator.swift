@@ -559,6 +559,15 @@ final class SyncCoordinator: @unchecked Sendable {
         deferredChangesLock.unlock()
     }
 
+    /// Whether `stop()` has retired this engine. Checked on the way into `handleEvent` and again
+    /// inside the work it dispatches to the main actor, because a retirement can land in between
+    /// and a stale batch applied afterwards would overwrite the new engine's model state.
+    private func isRetired(_ engine: CKSyncEngine) -> Bool {
+        deferredChangesLock.lock()
+        defer { deferredChangesLock.unlock() }
+        return retiredEngines[ObjectIdentifier(engine)] != nil
+    }
+
     /// The current account session. A method for the same reason as `setScrubbing`.
     private func currentSessionEpoch() -> Int {
         deferredChangesLock.lock()
@@ -989,10 +998,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         let isShared = isSharedEngine(engine)
         let engineLabel = isShared ? "shared" : "private"
 
-        deferredChangesLock.lock()
-        let isRetired = retiredEngines[ObjectIdentifier(engine)] != nil
-        deferredChangesLock.unlock()
-        guard !isRetired else {
+        guard !isRetired(engine) else {
             logger.debug("[\(engineLabel)] Ignoring event from a retired engine")
             return
         }
@@ -1023,6 +1029,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case .fetchedRecordZoneChanges(let fetchedChanges):
             logger.info("[\(engineLabel)] Fetched record zone changes: \(fetchedChanges.modifications.count) mods, \(fetchedChanges.deletions.count) dels")
             Task { @MainActor in
+                guard !self.isRetired(engine) else {
+                    self.logger.debug("[\(engineLabel)] Dropping fetched changes from an engine retired since the event")
+                    return
+                }
                 self.handleFetchedRecordZoneChanges(fetchedChanges, fromSharedEngine: isShared)
             }
 
@@ -1031,6 +1041,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
         case .sentRecordZoneChanges(let sentChanges):
             Task { @MainActor in
+                guard !self.isRetired(engine) else {
+                    self.logger.debug("[\(engineLabel)] Dropping sent-change results from an engine retired since the event")
+                    return
+                }
                 self.handleSentRecordZoneChanges(sentChanges, fromSharedEngine: isShared)
             }
 
@@ -1100,10 +1114,13 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                 // send is built in our own zone, so the stale pending entry would never be
                 // satisfied — replace it with one the send can clear.
                 guard recordID.zoneID == zoneID else {
+                    // The removal has to hit this engine, but the replacement goes through the
+                    // buffer: a concurrent stop() would otherwise leave it on a retired engine.
                     engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
-                    engine.state.add(pendingRecordZoneChanges: [
-                        .saveRecord(CKRecord.ID(recordName: recordID.recordName, zoneID: zoneID))
-                    ])
+                    enqueue(
+                        [.saveRecord(CKRecord.ID(recordName: recordID.recordName, zoneID: zoneID))],
+                        to: .privateDatabase
+                    )
                     logger.info("[\(engineLabel)] Re-queued per-user record \(recordID.recordName) into our own zone")
                     return true
                 }
@@ -1397,18 +1414,37 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     @MainActor
     private func pendingChangeNames() -> PendingChangeNames {
         var pending = PendingChangeNames()
-        for engine in [syncEngine, sharedSyncEngine].compactMap({ $0 }) {
-            for change in engine.state.pendingRecordZoneChanges {
-                switch change {
-                case .saveRecord(let pendingID):
-                    pending.saves.insert(pendingID.recordName)
-                case .deleteRecord(let pendingID):
-                    pending.deletions.insert(pendingID.recordName)
-                @unknown default:
-                    break
-                }
+
+        func record(_ change: CKSyncEngine.PendingRecordZoneChange) {
+            switch change {
+            case .saveRecord(let pendingID):
+                pending.saves.insert(pendingID.recordName)
+            case .deleteRecord(let pendingID):
+                pending.deletions.insert(pendingID.recordName)
+            @unknown default:
+                break
             }
         }
+
+        for engine in [syncEngine, sharedSyncEngine].compactMap({ $0 }) {
+            for change in engine.state.pendingRecordZoneChanges {
+                record(change)
+            }
+        }
+
+        // Buffered and in-flight work counts as pending too. A fetch arriving between engine
+        // creation and publication would otherwise see nothing queued for a record whose local edit
+        // is sitting in the buffer, apply the server's fields over it, and let the drain push the
+        // overwritten values.
+        deferredChangesLock.lock()
+        for deferred in deferredChanges {
+            record(deferred.change)
+        }
+        for deferred in inFlightDeletions {
+            record(deferred.change)
+        }
+        deferredChangesLock.unlock()
+
         return pending
     }
 
