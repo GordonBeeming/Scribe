@@ -280,12 +280,23 @@ final class SyncCoordinator: @unchecked Sendable {
                     return
                 }
 
+                guard self.isCurrentStart(generation) else {
+                    logger.info("Superseded start, not touching state")
+                    return
+                }
+
                 // The buffer and the migration state outlive the process, and a relaunch under a
                 // different account never sees `.switchAccounts` — the engine only reports a switch
                 // it observed. Without this the drain in publishEngines would hand the previous
                 // account's record IDs to the new account's engine.
                 do {
                     let userRecordName = try await CloudKitManager.shared.container.userRecordID().recordName
+
+                    guard self.isCurrentStart(generation) else {
+                        logger.info("Superseded start, not touching state")
+                        return
+                    }
+
                     if let previous = loadLastKnownUserRecordName(), previous != userRecordName {
                         logger.info("iCloud account changed since the last launch — discarding the previous account's buffered work")
                         discardBufferedChanges()
@@ -364,6 +375,17 @@ final class SyncCoordinator: @unchecked Sendable {
     /// `pushAllLocalData()` adds are harmless, since pending changes are a set.
     func stop() {
         deferredChangesLock.lock()
+        retireCurrentEnginesLocked()
+        persistUnsentWork()
+        deferredChangesLock.unlock()
+    }
+
+    /// Retire whichever engines are published, rescuing everything they still owe into the buffer.
+    /// Used by `stop()` and by `publishEngines` when a second start arrives, so a replaced pair
+    /// never takes its queued work with it.
+    ///
+    /// Callers hold `deferredChangesLock`.
+    private func retireCurrentEnginesLocked() {
         if let syncEngine {
             deferredChanges.append(contentsOf: syncEngine.state.pendingRecordZoneChanges.map {
                 DeferredChange(target: .privateDatabase, change: $0)
@@ -380,8 +402,6 @@ final class SyncCoordinator: @unchecked Sendable {
         inFlightChanges.removeAll()
         syncEngine = nil
         sharedSyncEngine = nil
-        persistUnsentWork()
-        deferredChangesLock.unlock()
     }
 
     /// Trigger an immediate fetch on the shared database engine (e.g. after accepting a share)
@@ -505,6 +525,16 @@ final class SyncCoordinator: @unchecked Sendable {
     /// `start(with:)` wins, and the superseded attempt's engines are retired on the spot so their
     /// events are ignored rather than racing the live pair. A method rather than an inline lock
     /// because `NSLock.lock()` is unavailable from the async context this runs in.
+    /// Whether this start attempt is still the current one. Checked before any shared state is
+    /// touched, not just before publishing: an older account-status check can resume long after a
+    /// newer start began, and would otherwise discard the newer account's work and overwrite the
+    /// stored user record name with a stale one.
+    private func isCurrentStart(_ generation: Int) -> Bool {
+        deferredChangesLock.lock()
+        defer { deferredChangesLock.unlock() }
+        return generation == startGeneration
+    }
+
     private func claimPublication(
         generation: Int,
         private privateEngine: CKSyncEngine,
@@ -524,6 +554,9 @@ final class SyncCoordinator: @unchecked Sendable {
     /// slip between the two and no `stop()` can discard an engine mid-handover.
     private func publishEngines(private privateEngine: CKSyncEngine, shared sharedEngine: CKSyncEngine) {
         deferredChangesLock.lock()
+        // start(with:) comes from onAppear, which can fire more than once. A pair already published
+        // has to be retired rather than dropped, or its queued work goes with it.
+        retireCurrentEnginesLocked()
         syncEngine = privateEngine
         sharedSyncEngine = sharedEngine
         let buffered = deferredChanges
@@ -766,6 +799,10 @@ final class SyncCoordinator: @unchecked Sendable {
             return
         }
         isScrubbing = true
+        // Captured in the same hold that claimed the pass. Read afterwards, a switch landing in
+        // between would bind the previous account's candidate list to the new account's epoch, and
+        // every later check would pass.
+        let epoch = sessionEpoch
         deferredChangesLock.unlock()
 
         logger.info("Classifying \(candidates.count) quarantined legacy shared deletion(s)")
@@ -774,7 +811,6 @@ final class SyncCoordinator: @unchecked Sendable {
         // forceFullResync() to replace the engines underneath it, and a deletion put back on a
         // discarded engine is gone for good. enqueue lands it on whichever engine is current, or
         // buffers it when the restart is still in flight.
-        let epoch = currentSessionEpoch()
 
         Task.detached { [self, logger] in
             var remaining = candidates
