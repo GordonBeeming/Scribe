@@ -19,6 +19,13 @@ enum RecordMerge {
 
     private static let modifiedAtKey = "modifiedAt"
 
+    /// Whether a record can serve as a merge ancestor. A cache written before records were archived
+    /// whole decodes to system fields only, which says nothing about which side changed what.
+    static func hasUsableAncestor(_ record: CKRecord?) -> Bool {
+        guard let record else { return false }
+        return !record.allKeys().isEmpty
+    }
+
     /// Merge `client` (this device's copy) and `server` (the copy CloudKit holds) against the
     /// `ancestor` both diverged from. The merged values go into a copy; `server` itself is left
     /// untouched so the caller can cache it as the ancestor for the next merge, which has to be
@@ -40,13 +47,9 @@ enum RecordMerge {
         }
         keys.remove(modifiedAtKey)
 
-        // A cache written before records were archived whole decodes to system fields only, so
-        // it can't tell us which side changed what. Those records get the old whole-record rule
-        // until the next successful sync writes a real ancestor.
-        let usableAncestor: CKRecord? = {
-            guard let ancestor, !ancestor.allKeys().isEmpty else { return nil }
-            return ancestor
-        }()
+        // Without a usable ancestor there is nothing to diff against, so those records get the old
+        // whole-record rule until the next successful sync writes a real one.
+        let usableAncestor: CKRecord? = hasUsableAncestor(ancestor) ? ancestor : nil
 
         var clientWonAKey = false
 

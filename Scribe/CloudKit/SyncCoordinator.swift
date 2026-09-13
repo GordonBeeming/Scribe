@@ -20,6 +20,7 @@ final class SyncCoordinator: @unchecked Sendable {
     private let legacySharedDeletionScrubKey = "didScrubLegacySharedDeletions"
     private let legacySharedDeletionQuarantineKey = "legacySharedDeletionQuarantine"
     private let deferredChangesKey = "deferredRecordZoneChanges"
+    private let lastKnownUserRecordNameKey = "lastKnownUserRecordName"
 
     /// The quarantine stores one entry per record ID: zone name, owner name and record name joined
     /// by a newline. CloudKit allows none of the three to contain a newline, so the split back is
@@ -74,6 +75,15 @@ final class SyncCoordinator: @unchecked Sendable {
     /// Bumped whenever the buffer is discarded for an account switch. Work in flight from the
     /// previous account must not write anything after it.
     private var sessionEpoch = 0
+
+    /// Deletions handed to an engine but not yet confirmed by the server. They have already left
+    /// `pendingRecordZoneChanges`, so if a resync retires the engine mid-request nothing would ever
+    /// retry them and the record would survive on the server. `stop()` rescues these too.
+    private var inFlightDeletions: [DeferredChange] = []
+
+    /// Record names whose private-zone copy is currently being fetched by
+    /// `recoverHijackedPerUserRecords`, so a second recovery is not started for the same record.
+    private var recoveringPerUserRecords: Set<String> = []
 
     /// Set while the legacy-deletion classification pass is running, so a second one can't start
     /// alongside it and process the same quarantine entries twice.
@@ -256,6 +266,23 @@ final class SyncCoordinator: @unchecked Sendable {
                     return
                 }
 
+                // The buffer and the migration state outlive the process, and a relaunch under a
+                // different account never sees `.switchAccounts` — the engine only reports a switch
+                // it observed. Without this the drain in publishEngines would hand the previous
+                // account's record IDs to the new account's engine.
+                do {
+                    let userRecordName = try await CloudKitManager.shared.container.userRecordID().recordName
+                    if let previous = loadLastKnownUserRecordName(), previous != userRecordName {
+                        logger.info("iCloud account changed since the last launch — discarding the previous account's buffered work")
+                        discardBufferedChanges()
+                        discardMigrationState()
+                    }
+                    saveLastKnownUserRecordName(userRecordName)
+                } catch {
+                    logger.error("Could not confirm the iCloud account, not publishing engines: \(error.localizedDescription)")
+                    return
+                }
+
                 // Private database engine (owns the data, reads + writes)
                 let configuration = CKSyncEngine.Configuration(
                     database: CloudKitManager.shared.privateDatabase,
@@ -321,6 +348,8 @@ final class SyncCoordinator: @unchecked Sendable {
             })
             retiredEngines[ObjectIdentifier(sharedSyncEngine)] = sharedSyncEngine
         }
+        deferredChanges.append(contentsOf: inFlightDeletions)
+        inFlightDeletions.removeAll()
         syncEngine = nil
         sharedSyncEngine = nil
         saveDeferredChanges(deferredChanges)
@@ -383,11 +412,22 @@ final class SyncCoordinator: @unchecked Sendable {
 
     /// Add pending changes to an engine, or buffer them when that engine doesn't exist yet.
     /// Everything happens inside one `deferredChangesLock` hold; see the lock's declaration.
-    private func enqueue(_ changes: [CKSyncEngine.PendingRecordZoneChange], to target: DeferredChange.Target) {
+    /// `ifSessionEpoch` makes the account check part of the same critical section as the handover,
+    /// so work from a previous account cannot slip in between a check and an add.
+    private func enqueue(
+        _ changes: [CKSyncEngine.PendingRecordZoneChange],
+        to target: DeferredChange.Target,
+        ifSessionEpoch: Int? = nil
+    ) {
         guard !changes.isEmpty else { return }
         let label = target == .privateDatabase ? "private" : "shared"
 
         deferredChangesLock.lock()
+        if let ifSessionEpoch, ifSessionEpoch != sessionEpoch {
+            deferredChangesLock.unlock()
+            logger.info("Dropping \(changes.count) change(s) from a previous account session")
+            return
+        }
         guard let engine = target == .privateDatabase ? syncEngine : sharedSyncEngine else {
             deferredChanges.append(contentsOf: changes.map { DeferredChange(target: target, change: $0) })
             let buffered = deferredChanges.count
@@ -526,6 +566,29 @@ final class SyncCoordinator: @unchecked Sendable {
         return sessionEpoch
     }
 
+    /// Record deletions handed to an engine, so `stop()` can rescue any the server never confirmed.
+    private func trackInFlightDeletions(_ recordIDs: [CKRecord.ID], target: DeferredChange.Target) {
+        guard !recordIDs.isEmpty else { return }
+        deferredChangesLock.lock()
+        inFlightDeletions.append(contentsOf: recordIDs.map {
+            DeferredChange(target: target, change: .deleteRecord($0))
+        })
+        deferredChangesLock.unlock()
+    }
+
+    /// Forget deletions the server has now answered for, whether it accepted them or refused them.
+    /// A refusal leaves the change back on the engine, which retries it itself.
+    private func clearInFlightDeletions(_ recordIDs: [CKRecord.ID]) {
+        guard !recordIDs.isEmpty else { return }
+        let names = Set(recordIDs.map(\.recordName))
+        deferredChangesLock.lock()
+        inFlightDeletions.removeAll { deferred in
+            guard case .deleteRecord(let id) = deferred.change else { return false }
+            return names.contains(id.recordName)
+        }
+        deferredChangesLock.unlock()
+    }
+
     /// Serialises the quarantine's read-modify-write cycles. The gate runs on the engine's queue
     /// and the classification pass in a detached task, so without this a gate insert landing
     /// between a pass's load and save is dropped, the following empty check sets the done flag,
@@ -645,13 +708,26 @@ final class SyncCoordinator: @unchecked Sendable {
                 UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
                     .set(true, forKey: legacySharedDeletionScrubKey)
                 for recordID in toRestore {
-                    enqueue([.deleteRecord(recordID)], to: .sharedDatabase)
+                    enqueue([.deleteRecord(recordID)], to: .sharedDatabase, ifSessionEpoch: epoch)
                 }
                 logger.info("Legacy shared deletion scrub complete: \(restored) re-queued, \(dropped) dropped")
             } else {
                 logger.error("Legacy shared deletion scrub incomplete: \(remaining.count) still quarantined, \(toRestore.count) confirmed deletion(s) parked, retrying on the next start (\(dropped) dropped)")
             }
         }
+    }
+
+    /// The iCloud user this device last synced as, or nil on a first run. Internal rather than
+    /// private so the UserDefaults round-trip can be tested without standing up a live sync engine.
+    func loadLastKnownUserRecordName() -> String? {
+        UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
+            .string(forKey: lastKnownUserRecordNameKey)
+    }
+
+    /// Record the iCloud user this device is syncing as. Internal for the same reason as the loader.
+    func saveLastKnownUserRecordName(_ recordName: String) {
+        UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
+            .set(recordName, forKey: lastKnownUserRecordNameKey)
     }
 
     /// Read the persisted deferred changes. Internal rather than private so the UserDefaults
@@ -998,22 +1074,27 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         let bgContext = ModelContext(modelContainer)
         var recordsToSave: [CKRecord] = []
         var recordIDsToDelete: [CKRecord.ID] = []
-        var reclaimedPerUserCache = false
         var quarantinedThisBatch = false
 
-        /// Keep a per-user settings record out of the share. The shared engine must never send
-        /// one, and a private-engine send whose cache points at the other account's zone is
-        /// repaired here so the record goes back into our own zone as a fresh save.
+        /// Keep a per-user settings record out of the share. The shared engine must never send one,
+        /// and a private-engine send whose cache points at the other account's zone is handed to
+        /// recovery rather than uploaded.
         /// Returns true when the change was handled and must not be added to the batch.
-        func handlePerUserRecord(_ recordID: CKRecord.ID, ckRecordData: Data?, clearCache: () -> Void) -> Bool {
+        func handlePerUserRecord(_ recordID: CKRecord.ID, ckRecordData: Data?) -> Bool {
             guard isShared else {
                 if isFromSharedZone(ckRecordData) {
-                    // Pushing the in-memory values is right here, unlike the launch-time reclaim: a
-                    // queued save means the user just edited this setting, so what is in memory is
-                    // their intent, not the other member's values that arrived through the share.
-                    logger.info("[\(engineLabel)] Reclaiming per-user record \(recordID.recordName) from another owner's zone")
-                    clearCache()
-                    reclaimedPerUserCache = true
+                    // A queued save is not proof the user edited this: pushAllLocalData() queues
+                    // every per-user record on sign-in and on resync, so the values in memory may
+                    // still be the other member's. Uploading them as a fresh record would be
+                    // rejected as existing, and the conflict merge has no ancestor to work from, so
+                    // last-writer-wins could overwrite this account's private copy. Recovery reads
+                    // that copy from the server, which is the only answer that cannot lose it.
+                    logger.info("[\(engineLabel)] Deferring per-user record \(recordID.recordName) to recovery instead of pushing possibly-hijacked values")
+                    engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    recoverHijackedPerUserRecords([
+                        CKRecord.ID(recordName: recordID.recordName, zoneID: zoneID)
+                    ])
+                    return true
                 }
                 // A change queued by an earlier build can still name a foreign zone. The record we
                 // send is built in our own zone, so the stale pending entry would never be
@@ -1091,12 +1172,12 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     }
                     recordsToSave.append(RecordConversion.record(from: member, zoneID: targetZoneID))
                 } else if let section = try? bgContext.fetch(FetchDescriptor<DashboardSection>(predicate: #Predicate { $0.id == uuid })).first {
-                    if handlePerUserRecord(recordID, ckRecordData: section.ckRecordData, clearCache: { section.ckRecordData = nil }) {
+                    if handlePerUserRecord(recordID, ckRecordData: section.ckRecordData) {
                         continue
                     }
                     recordsToSave.append(RecordConversion.record(from: section, zoneID: zoneID))
                 } else if let preferences = try? bgContext.fetch(FetchDescriptor<UserPreferences>(predicate: #Predicate { $0.id == uuid })).first {
-                    if handlePerUserRecord(recordID, ckRecordData: preferences.ckRecordData, clearCache: { preferences.ckRecordData = nil }) {
+                    if handlePerUserRecord(recordID, ckRecordData: preferences.ckRecordData) {
                         continue
                     }
                     recordsToSave.append(RecordConversion.record(from: preferences, zoneID: zoneID))
@@ -1142,16 +1223,9 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             runLegacySharedDeletionClassification()
         }
 
-        if reclaimedPerUserCache {
-            do {
-                try bgContext.save()
-            } catch {
-                logger.error("[\(engineLabel)] Failed to clear hijacked per-user record cache: \(error.localizedDescription)")
-            }
-        }
-
         guard !recordsToSave.isEmpty || !recordIDsToDelete.isEmpty else { return nil }
         logger.info("[\(engineLabel)] Sending batch: \(recordsToSave.count) saves, \(recordIDsToDelete.count) deletes")
+        trackInFlightDeletions(recordIDsToDelete, target: isShared ? .sharedDatabase : .privateDatabase)
         return CKSyncEngine.RecordZoneChangeBatch(recordsToSave: recordsToSave, recordIDsToDelete: recordIDsToDelete, atomicByZone: false)
     }
 
@@ -1800,12 +1874,18 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         guard let context = modelContainer?.mainContext else { return }
         let engineLabel = fromSharedEngine ? "shared" : "private"
         let targetEngine = fromSharedEngine ? sharedSyncEngine : syncEngine
+        let targetDatabase: DeferredChange.Target = fromSharedEngine ? .sharedDatabase : .privateDatabase
 
         // Batch all updates into a single save to avoid per-record main-thread saves
         for savedRecord in changes.savedRecords {
             updateCKRecordData(from: savedRecord, in: context)
             logger.info("[\(engineLabel)] Saved record \(savedRecord.recordID.recordName)")
         }
+
+        // The server has answered for these, either way: an accepted deletion is done, and a
+        // refused one is back on the engine, which retries it itself.
+        clearInFlightDeletions(changes.deletedRecordIDs)
+        clearInFlightDeletions(changes.failedRecordDeletes.map(\.key))
 
         let pending = pendingChangeNames()
 
@@ -1849,7 +1929,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
                     if outcome.differsFromServer {
                         logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — merged, re-pushing")
-                        targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                        enqueue([.saveRecord(recordID)], to: targetDatabase)
                     } else {
                         logger.info("[\(engineLabel)] Conflict for \(recordID.recordName) — server already has the merged result")
                     }
@@ -1870,14 +1950,14 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     syncEngine?.state.add(pendingDatabaseChanges: [
                         .saveZone(CKRecordZone(zoneID: zoneID))
                     ])
-                    targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    enqueue([.saveRecord(recordID)], to: targetDatabase)
                 }
 
             case .unknownItem:
                 // Record doesn't exist on server — clear lastKnownRecord and retry
                 logger.info("[\(engineLabel)] Unknown item \(recordID.recordName) — clearing cached record and retrying")
                 clearCKRecordData(for: recordID, in: context)
-                targetEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                enqueue([.saveRecord(recordID)], to: targetDatabase)
 
             case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
                  .requestRateLimited, .operationCancelled:
@@ -1995,24 +2075,58 @@ extension SyncCoordinator: CKSyncEngineDelegate {
     /// the record untouched with its foreign cache intact, so the next launch tries again; a
     /// half-repair here would be indistinguishable from the hijack itself.
     func recoverHijackedPerUserRecords(_ recordIDs: [CKRecord.ID]) {
-        guard !recordIDs.isEmpty else { return }
+        let toRecover = claimPerUserRecovery(recordIDs)
+        guard !toRecover.isEmpty else { return }
+
+        let epoch = currentSessionEpoch()
 
         Task.detached { [self, logger] in
-            for recordID in recordIDs {
+            defer { releasePerUserRecovery(toRecover) }
+
+            for recordID in toRecover {
                 do {
                     let record = try await CloudKitManager.shared.privateDatabase.record(for: recordID)
+                    var adopted = false
                     await MainActor.run {
+                        guard currentSessionEpoch() == epoch else {
+                            logger.info("Account switched mid-recovery — abandoning \(recordID.recordName)")
+                            return
+                        }
                         guard let context = modelContainer?.mainContext else { return }
-                        applyFetchedRecord(record, to: context, pending: pendingChangeNames())
+
+                        // The hijack we are repairing happened under a build that cached system
+                        // fields only, so there is usually no ancestor to diff a local edit
+                        // against. Merging anyway degenerates to whole-record last-writer-wins and
+                        // the other member's values can win, reinstating the hijack. Adopting the
+                        // private copy wholesale is the only answer that cannot; an edit made
+                        // during the second the lookup takes is superseded.
+                        var pending = pendingChangeNames()
+                        let cached = cachedRecord(forRecordName: recordID.recordName, in: context)
+                        if !RecordMerge.hasUsableAncestor(cached) {
+                            pending.saves.remove(recordID.recordName)
+                        }
+
+                        applyFetchedRecord(record, to: context, pending: pending)
                         do {
                             try context.save()
                         } catch {
                             logger.error("Failed to save recovered per-user record \(recordID.recordName): \(error.localizedDescription)")
+                            return
                         }
+                        adopted = true
                     }
-                    logger.info("Recovered per-user record \(recordID.recordName) from our own private zone")
+                    if adopted, let uuid = UUID(uuidString: recordID.recordName) {
+                        // Any local edit the merge kept has to go out, now against the private
+                        // record's tag rather than the foreign one.
+                        await MainActor.run { pushChange(for: uuid) }
+                        logger.info("Recovered per-user record \(recordID.recordName) from our own private zone")
+                    }
                 } catch let error as CKError where error.code == .unknownItem {
                     await MainActor.run {
+                        guard currentSessionEpoch() == epoch else {
+                            logger.info("Account switched mid-recovery — abandoning \(recordID.recordName)")
+                            return
+                        }
                         guard let context = modelContainer?.mainContext else { return }
                         clearCKRecordData(for: recordID, in: context)
                         do {
@@ -2022,13 +2136,30 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                             return
                         }
                         pushChanges(for: [recordID])
+                        logger.info("No private copy of \(recordID.recordName) on the server — pushing the local values as a fresh record")
                     }
-                    logger.info("No private copy of \(recordID.recordName) on the server — pushing the local values as a fresh record")
                 } catch {
                     logger.error("Could not recover per-user record \(recordID.recordName), leaving it for the next launch: \(error.localizedDescription)")
                 }
             }
         }
+    }
+
+    /// Take ownership of the records about to be recovered, returning only those no other recovery
+    /// already has. Two passes on the same record would each fetch and apply it, and the second
+    /// would undo whatever the first merged.
+    private func claimPerUserRecovery(_ recordIDs: [CKRecord.ID]) -> [CKRecord.ID] {
+        deferredChangesLock.lock()
+        defer { deferredChangesLock.unlock() }
+        return recordIDs.filter { recoveringPerUserRecords.insert($0.recordName).inserted }
+    }
+
+    private func releasePerUserRecovery(_ recordIDs: [CKRecord.ID]) {
+        deferredChangesLock.lock()
+        for recordID in recordIDs {
+            recoveringPerUserRecords.remove(recordID.recordName)
+        }
+        deferredChangesLock.unlock()
     }
 
     /// Force a full resync — the "Unstuck" recovery action.

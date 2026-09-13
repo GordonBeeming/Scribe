@@ -206,4 +206,26 @@ struct SyncRecoveryTests {
         #expect(UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?
             .object(forKey: "deferredRecordZoneChanges") == nil)
     }
+
+    /// A relaunch under a different iCloud account never sees a `.switchAccounts` event, because the
+    /// engine only reports a switch it observed. The remembered user record name is what lets the
+    /// next launch notice and throw away the previous account's buffered work.
+    @Test("The last known iCloud user record name round-trips through UserDefaults")
+    @MainActor
+    func lastKnownUserRecordNameRoundTrips() {
+        let coordinator = SyncCoordinator.shared
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        defaults?.removeObject(forKey: "lastKnownUserRecordName")
+
+        // Nothing remembered on a first run, so there is no previous account to compare against.
+        #expect(coordinator.loadLastKnownUserRecordName() == nil)
+
+        coordinator.saveLastKnownUserRecordName("_accountA")
+        #expect(coordinator.loadLastKnownUserRecordName() == "_accountA")
+
+        coordinator.saveLastKnownUserRecordName("_accountB")
+        #expect(coordinator.loadLastKnownUserRecordName() == "_accountB")
+
+        defaults?.removeObject(forKey: "lastKnownUserRecordName")
+    }
 }

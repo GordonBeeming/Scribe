@@ -72,6 +72,22 @@ struct RecordMergeTests {
         #expect(outcome.differsFromServer)
     }
 
+    /// Recovery uses this to decide whether a local edit can be diffed at all. A system-fields-only
+    /// cache, which is what the old build wrote, has to read as unusable or the merge degenerates
+    /// to whole-record last-writer-wins and can reinstate the hijack it is repairing.
+    @Test("hasUsableAncestor is true only for a record carrying custom fields")
+    func usableAncestorNeedsCustomFields() {
+        let empty = CKRecord(
+            recordType: RecordConversion.budgetItemRecordType,
+            recordID: CKRecord.ID(recordName: "5D3D3D3D-0000-0000-0000-00000000000C", zoneID: Self.zoneID)
+        )
+        let populated = Self.makeRecord(name: "Rent", notes: nil, modifiedAt: Self.older)
+
+        #expect(!RecordMerge.hasUsableAncestor(nil))
+        #expect(!RecordMerge.hasUsableAncestor(empty))
+        #expect(RecordMerge.hasUsableAncestor(populated))
+    }
+
     @Test("Only the server changed a key — the server value stands and no re-push is needed")
     func onlyServerChanged() {
         let ancestor = Self.makeRecord(name: "Rent", notes: "old", modifiedAt: Self.older)
