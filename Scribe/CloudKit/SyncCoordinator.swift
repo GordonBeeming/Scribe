@@ -230,6 +230,11 @@ final class SyncCoordinator: @unchecked Sendable {
 
     /// Set by `forceFullResync()` so the re-upload runs *after* `start(with:)` has
     /// asynchronously recreated the engines — pushing before they exist is a no-op.
+    ///
+    /// The request belongs to the account that made it. Left standing across an account change it
+    /// would fire once the new account's engines are published, and `pushAllLocalData()` would
+    /// upload the previous account's models into this one's store, so it is cleared wherever that
+    /// account's other work is discarded.
     @MainActor
     private var pendingResyncPush = false
 
@@ -287,6 +292,7 @@ final class SyncCoordinator: @unchecked Sendable {
                         let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
                         defaults?.removeObject(forKey: stateKey)
                         defaults?.removeObject(forKey: sharedStateKey)
+                        await MainActor.run { pendingResyncPush = false }
                     }
                     saveLastKnownUserRecordName(userRecordName)
                 } catch {
@@ -1085,6 +1091,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
                     UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.removeObject(forKey: sharedStateKey)
                     discardBufferedChanges()
                     discardMigrationState()
+                    Task { @MainActor in pendingResyncPush = false }
                 default:
                     break
                 }
@@ -1337,6 +1344,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
             defaults?.removeObject(forKey: sharedStateKey)
             discardBufferedChanges()
             discardMigrationState()
+            Task { @MainActor in pendingResyncPush = false }
 
         @unknown default:
             break
