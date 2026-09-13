@@ -614,6 +614,28 @@ final class SyncCoordinator: @unchecked Sendable {
         return retiredEngines[ObjectIdentifier(engine)] != nil
     }
 
+    /// Persist an engine's serialized state, and our own record of unsent work, only while that
+    /// engine is still live. The check and both writes share one lock hold: this runs synchronously
+    /// on the engine's queue, so a `stop()` landing between a separate check and the write would
+    /// stamp a retired engine's state under the live key and resurrect the token a resync dropped.
+    private func saveStateIfLive(
+        _ engine: CKSyncEngine,
+        _ serialization: CKSyncEngine.State.Serialization,
+        forKey key: String
+    ) {
+        deferredChangesLock.lock()
+        defer { deferredChangesLock.unlock() }
+
+        guard retiredEngines[ObjectIdentifier(engine)] == nil else {
+            logger.debug("Ignoring state update from a retired engine")
+            return
+        }
+        saveSyncEngineState(serialization, forKey: key)
+        // The engine's serialized state now carries whatever was drained into it, so this is the
+        // first moment our own copy of that work can safely be written away.
+        persistUnsentWork()
+    }
+
     /// The current account session. A method for the same reason as `setScrubbing`.
     private func currentSessionEpoch() -> Int {
         deferredChangesLock.lock()
@@ -1104,14 +1126,11 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         switch event {
         case .stateUpdate(let stateUpdate):
             let key = isShared ? sharedStateKey : stateKey
-            saveSyncEngineState(stateUpdate.stateSerialization, forKey: key)
-            // The engine's serialized state now carries whatever was drained into it, so this is
-            // the first moment our own copy of that work can safely be written away.
-            deferredChangesLock.lock()
-            persistUnsentWork()
-            deferredChangesLock.unlock()
+            saveStateIfLive(engine, stateUpdate.stateSerialization, forKey: key)
 
         case .accountChange(let accountChange):
+            // No retirement guard needed: the key removals are idempotent and the discard helpers
+            // take the lock themselves, so a concurrent stop() cannot leave this half-applied.
             if !isShared {
                 handleAccountChange(accountChange)
             } else {
@@ -1133,6 +1152,9 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case .fetchedRecordZoneChanges(let fetchedChanges):
             logger.info("[\(engineLabel)] Fetched record zone changes: \(fetchedChanges.modifications.count) mods, \(fetchedChanges.deletions.count) dels")
             Task { @MainActor in
+                // Safe to check and then act without holding the lock across both: this runs on
+                // the main actor and the only caller of stop() is forceFullResync(), which is also
+                // @MainActor, so a retirement cannot land between the check and the handler body.
                 guard !self.isRetired(engine) else {
                     self.logger.debug("[\(engineLabel)] Dropping fetched changes from an engine retired since the event")
                     return
@@ -1145,6 +1167,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
         case .sentRecordZoneChanges(let sentChanges):
             Task { @MainActor in
+                // Same reasoning as the fetched-changes case: main-actor task, main-actor stop().
                 guard !self.isRetired(engine) else {
                     self.logger.debug("[\(engineLabel)] Dropping sent-change results from an engine retired since the event")
                     return
