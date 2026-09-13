@@ -83,10 +83,11 @@ final class SyncCoordinator: @unchecked Sendable {
     /// previous account must not write anything after it.
     private var sessionEpoch = 0
 
-    /// Deletions handed to an engine but not yet confirmed by the server. They have already left
+    /// Changes handed to an engine but not yet confirmed by the server. They have already left
     /// `pendingRecordZoneChanges`, so if a resync retires the engine mid-request nothing would ever
-    /// retry them and the record would survive on the server. `stop()` rescues these too.
-    private var inFlightDeletions: [DeferredChange] = []
+    /// retry them, and a fetch in that window would see no pending work for a record whose local
+    /// edit is still on the wire. `stop()` rescues these too.
+    private var inFlightChanges: [DeferredChange] = []
 
     /// Record names whose private-zone copy is currently being fetched by
     /// `recoverHijackedPerUserRecords`, so a second recovery is not started for the same record.
@@ -95,6 +96,9 @@ final class SyncCoordinator: @unchecked Sendable {
     /// Set while the legacy-deletion classification pass is running, so a second one can't start
     /// alongside it and process the same quarantine entries twice.
     private var isScrubbing = false
+
+    /// A foreground fetch asked for before the engines existed, replayed once they do.
+    private var foregroundFetchRequested = false
 
     /// Bumped by every `start(with:)`. An earlier account-status check can still be awaiting when a
     /// resync starts another, and whichever finishes last would otherwise publish over the other's
@@ -372,8 +376,8 @@ final class SyncCoordinator: @unchecked Sendable {
             })
             retiredEngines[ObjectIdentifier(sharedSyncEngine)] = sharedSyncEngine
         }
-        deferredChanges.append(contentsOf: inFlightDeletions)
-        inFlightDeletions.removeAll()
+        deferredChanges.append(contentsOf: inFlightChanges)
+        inFlightChanges.removeAll()
         syncEngine = nil
         sharedSyncEngine = nil
         persistUnsentWork()
@@ -411,10 +415,16 @@ final class SyncCoordinator: @unchecked Sendable {
         var engines: [(label: String, engine: CKSyncEngine)] = []
         if let syncEngine { engines.append(("private", syncEngine)) }
         if let sharedSyncEngine { engines.append(("shared", sharedSyncEngine)) }
+        if engines.isEmpty {
+            // The engines run their own fetch as they start, which usually covers this, but a
+            // request that arrived first should not have to rely on that. Replayed by
+            // publishEngines once they exist.
+            foregroundFetchRequested = true
+        }
         deferredChangesLock.unlock()
 
         guard !engines.isEmpty else {
-            logger.debug("Cannot fetch changes: sync engines not started")
+            logger.debug("Deferring foreground fetch until the sync engines start")
             return
         }
 
@@ -469,9 +479,9 @@ final class SyncCoordinator: @unchecked Sendable {
     /// would push one person's data at another's store.
     private func discardBufferedChanges() {
         deferredChangesLock.lock()
-        let discarded = deferredChanges.count + inFlightDeletions.count
+        let discarded = deferredChanges.count + inFlightChanges.count
         deferredChanges.removeAll()
-        inFlightDeletions.removeAll()
+        inFlightChanges.removeAll()
         persistUnsentWork()
         sessionEpoch += 1
         deferredChangesLock.unlock()
@@ -518,7 +528,10 @@ final class SyncCoordinator: @unchecked Sendable {
         sharedSyncEngine = sharedEngine
         let buffered = deferredChanges
         deferredChanges.removeAll()
-        persistUnsentWork()
+        // Deliberately not persisted here. The entries only become durable when the engine writes
+        // its own serialized state, so the empty list is written from the .stateUpdate handler
+        // instead. A kill before that re-drains the same entries next launch, which is harmless
+        // because pending changes are a set.
 
         let privateChanges = buffered.filter { $0.target == .privateDatabase }.map(\.change)
         let sharedChanges = buffered.filter { $0.target == .sharedDatabase }.map(\.change)
@@ -528,10 +541,16 @@ final class SyncCoordinator: @unchecked Sendable {
         if !sharedChanges.isEmpty {
             sharedEngine.state.add(pendingRecordZoneChanges: sharedChanges)
         }
+        let replayForegroundFetch = foregroundFetchRequested
+        foregroundFetchRequested = false
         deferredChangesLock.unlock()
 
         if !buffered.isEmpty {
             logger.info("Drained deferred changes: \(privateChanges.count) private, \(sharedChanges.count) shared")
+        }
+
+        if replayForegroundFetch {
+            fetchAllChanges()
         }
 
         scrubLegacySharedDeletionsIfNeeded(on: sharedEngine)
@@ -611,32 +630,38 @@ final class SyncCoordinator: @unchecked Sendable {
     ///
     /// Callers hold `deferredChangesLock`.
     private func persistUnsentWork() {
-        saveDeferredChanges(deferredChanges + inFlightDeletions)
+        saveDeferredChanges(deferredChanges + inFlightChanges)
     }
 
-    /// Record deletions handed to an engine, so `stop()` or a relaunch can rescue any the server
-    /// never confirmed.
-    private func trackInFlightDeletions(_ recordIDs: [CKRecord.ID], target: DeferredChange.Target) {
-        guard !recordIDs.isEmpty else { return }
+    /// Record changes handed to an engine, so `stop()` or a relaunch can rescue any the server
+    /// never confirmed, and so `pendingChangeNames()` still counts them as queued. A save leaves
+    /// `pendingRecordZoneChanges` the moment its request starts, and a fetch arriving in that window
+    /// would otherwise see nothing pending and apply the server's copy over the local edit.
+    private func trackInFlightChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange], target: DeferredChange.Target) {
+        guard !changes.isEmpty else { return }
         deferredChangesLock.lock()
-        inFlightDeletions.append(contentsOf: recordIDs.map {
-            DeferredChange(target: target, change: .deleteRecord($0))
+        inFlightChanges.append(contentsOf: changes.map {
+            DeferredChange(target: target, change: $0)
         })
         persistUnsentWork()
         deferredChangesLock.unlock()
     }
 
-    /// Forget deletions the server has now answered for, whether it accepted them or refused them.
+    /// Forget changes the server has now answered for, whether it accepted them or refused them.
     /// A refusal leaves the change back on the engine, which retries it itself. Matched on the full
     /// record ID and the database it went to, since the same record name can exist in two zones.
-    private func clearInFlightDeletions(_ recordIDs: [CKRecord.ID], target: DeferredChange.Target) {
+    private func clearInFlightChanges(_ recordIDs: [CKRecord.ID], target: DeferredChange.Target) {
         guard !recordIDs.isEmpty else { return }
         let answered = Set(recordIDs)
         deferredChangesLock.lock()
-        inFlightDeletions.removeAll { deferred in
-            guard deferred.target == target,
-                  case .deleteRecord(let id) = deferred.change else { return false }
-            return answered.contains(id)
+        inFlightChanges.removeAll { deferred in
+            guard deferred.target == target else { return false }
+            switch deferred.change {
+            case .saveRecord(let id), .deleteRecord(let id):
+                return answered.contains(id)
+            @unknown default:
+                return false
+            }
         }
         persistUnsentWork()
         deferredChangesLock.unlock()
@@ -1080,6 +1105,11 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         case .stateUpdate(let stateUpdate):
             let key = isShared ? sharedStateKey : stateKey
             saveSyncEngineState(stateUpdate.stateSerialization, forKey: key)
+            // The engine's serialized state now carries whatever was drained into it, so this is
+            // the first moment our own copy of that work can safely be written away.
+            deferredChangesLock.lock()
+            persistUnsentWork()
+            deferredChangesLock.unlock()
 
         case .accountChange(let accountChange):
             if !isShared {
@@ -1315,7 +1345,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
         guard !recordsToSave.isEmpty || !recordIDsToDelete.isEmpty else { return nil }
         logger.info("[\(engineLabel)] Sending batch: \(recordsToSave.count) saves, \(recordIDsToDelete.count) deletes")
-        trackInFlightDeletions(recordIDsToDelete, target: isShared ? .sharedDatabase : .privateDatabase)
+        trackInFlightChanges(
+            recordsToSave.map { .saveRecord($0.recordID) } + recordIDsToDelete.map { .deleteRecord($0) },
+            target: isShared ? .sharedDatabase : .privateDatabase
+        )
         return CKSyncEngine.RecordZoneChangeBatch(recordsToSave: recordsToSave, recordIDsToDelete: recordIDsToDelete, atomicByZone: false)
     }
 
@@ -1514,7 +1547,7 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         for deferred in deferredChanges {
             record(deferred.change)
         }
-        for deferred in inFlightDeletions {
+        for deferred in inFlightChanges {
             record(deferred.change)
         }
         deferredChangesLock.unlock()
@@ -1994,8 +2027,10 @@ extension SyncCoordinator: CKSyncEngineDelegate {
 
         // The server has answered for these, either way: an accepted deletion is done, and a
         // refused one is back on the engine, which retries it itself.
-        clearInFlightDeletions(changes.deletedRecordIDs, target: targetDatabase)
-        clearInFlightDeletions(changes.failedRecordDeletes.map(\.key), target: targetDatabase)
+        clearInFlightChanges(changes.savedRecords.map(\.recordID), target: targetDatabase)
+        clearInFlightChanges(changes.failedRecordSaves.map(\.record.recordID), target: targetDatabase)
+        clearInFlightChanges(changes.deletedRecordIDs, target: targetDatabase)
+        clearInFlightChanges(changes.failedRecordDeletes.map(\.key), target: targetDatabase)
 
         let pending = pendingChangeNames()
 
