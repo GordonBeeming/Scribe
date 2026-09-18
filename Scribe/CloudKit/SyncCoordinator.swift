@@ -499,7 +499,7 @@ final class SyncCoordinator: @unchecked Sendable {
     /// would push one person's data at another's store.
     private func discardBufferedChanges() {
         deferredChangesLock.lock()
-        let discarded = deferredChanges.count + inFlightChanges.count
+        let discarded = deferredChanges.count + inFlightChanges.count + dropLivePendingChangesLocked()
         deferredChanges.removeAll()
         inFlightChanges.removeAll()
         persistUnsentWork()
@@ -508,6 +508,27 @@ final class SyncCoordinator: @unchecked Sendable {
         if discarded > 0 {
             logger.info("Discarded \(discarded) buffered change(s) belonging to the previous account")
         }
+    }
+
+    /// Void what the published engines still owe the server, returning how many changes went.
+    ///
+    /// The buffer is only half of the previous account's work. An engine that is already live
+    /// holds its own pending changes, and `retireCurrentEnginesLocked` rescues those into the
+    /// buffer the moment a new pair is published — so clearing the buffer alone still hands
+    /// account A's record IDs to account B's engines. The engines are left published rather than
+    /// retired: the delegate's `.switchAccounts` paths run inside a live engine's callback and
+    /// nothing restarts sync until the next `start(with:)`.
+    ///
+    /// Callers hold `deferredChangesLock`.
+    private func dropLivePendingChangesLocked() -> Int {
+        var dropped = 0
+        for engine in [syncEngine, sharedSyncEngine].compactMap({ $0 }) {
+            let pending = engine.state.pendingRecordZoneChanges
+            guard !pending.isEmpty else { continue }
+            engine.state.remove(pendingRecordZoneChanges: pending)
+            dropped += pending.count
+        }
+        return dropped
     }
 
     /// Drop the one-off migration state on an account switch. The done flag and the quarantine are
@@ -2393,16 +2414,22 @@ extension SyncCoordinator: CKSyncEngineDelegate {
         }
         logger.info("forceFullResync: dropping sync state and re-queuing local records")
 
-        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
-        defaults?.removeObject(forKey: stateKey)
-        defaults?.removeObject(forKey: sharedStateKey)
-
         // The re-upload must wait until start(with:) has recreated the engines — it
         // does so asynchronously after an account-status check, so pushing here would
         // be a no-op against nil engines. pendingResyncPush makes start() run the push
         // once the engines exist.
         pendingResyncPush = true
+
+        // stop() first. Clearing the keys while the engines are still published leaves a window
+        // where a live engine's .stateUpdate passes the retirement guard in saveStateIfLive and
+        // writes its serialization straight back, so the next start loads the very token this
+        // resync exists to drop. After stop() both engines are retired and their updates ignored.
         stop()
+
+        let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+        defaults?.removeObject(forKey: stateKey)
+        defaults?.removeObject(forKey: sharedStateKey)
+
         start(with: container)
         syncStatus = .syncing
     }
