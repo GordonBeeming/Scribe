@@ -37,12 +37,16 @@ enum BudgetItemAmountRefresher {
     }
 
     /// Refresh a single item. Returns `true` if `item.amount` changed.
+    ///
+    /// `modifiedAt` is deliberately left alone. The headline amount is derived from
+    /// the override history, and every device recomputes it on its own, so a refresh
+    /// is not a user edit. Stamping it as one made a device that merely opened the
+    /// app look like the newest writer and let it beat a real edit made elsewhere.
     @discardableResult
     static func refresh(_ item: BudgetItem, on date: Date = Date()) -> Bool {
         let effective = item.effectiveAmount(on: date)
         guard effective != item.amount else { return false }
         item.amount = effective
-        item.modifiedAt = Date()
         return true
     }
 

@@ -15,8 +15,15 @@ struct ScribeWatchApp: App {
         }
         .modelContainer(SharedModelContainer.shared)
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .background {
+            switch newPhase {
+            case .active:
+                // The watch rarely receives silent pushes; raising the wrist is
+                // the moment to pull the phone's and the other member's changes.
+                SyncCoordinator.shared.fetchAllChanges()
+            case .background:
                 WidgetCenter.shared.reloadAllTimelines()
+            default:
+                break
             }
         }
     }

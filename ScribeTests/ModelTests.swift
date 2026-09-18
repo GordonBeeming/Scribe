@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import Scribe
 
 @Suite("Model Tests")
@@ -245,5 +246,41 @@ struct ModelTests {
         } else {
             Issue.record("Expected fixedDayOfMonth anchor")
         }
+    }
+
+    // MARK: - BudgetItemAmountRefresher
+
+    /// The refresher writes derived state. If it stamped `modifiedAt`, a device that
+    /// merely opened the app would look like the newest writer and win sync merges
+    /// over a real edit made on another device.
+    @Test("Refreshing the headline amount never bumps modifiedAt")
+    @MainActor
+    func refreshDoesNotTouchModifiedAt() throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let container = try ModelContainer(
+            for: BudgetItem.self, AmountOverride.self, Occurrence.self,
+            FamilyMember.self, DashboardSection.self, UserPreferences.self,
+            configurations: config
+        )
+        let context = container.mainContext
+
+        let item = BudgetItem(
+            name: "Rent", type: .expense, amount: 100,
+            frequency: .monthly, dayOfMonth: 1, category: .housing
+        )
+        context.insert(item)
+        let originalModifiedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        item.modifiedAt = originalModifiedAt
+
+        let yesterday = try #require(Calendar.current.date(byAdding: .day, value: -1, to: Date()))
+        let override_ = AmountOverride(effectiveDate: yesterday, amount: 150, budgetItem: item)
+        context.insert(override_)
+        try context.save()
+
+        let changed = BudgetItemAmountRefresher.refresh(item)
+
+        #expect(changed == true)
+        #expect(item.amount == 150)
+        #expect(item.modifiedAt == originalModifiedAt)
     }
 }
