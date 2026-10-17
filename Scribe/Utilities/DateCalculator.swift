@@ -329,7 +329,7 @@ struct DateCalculator {
             let weekday = calendar.component(.weekday, from: date)
             let isHoliday = holidays.contains(date)
             if adjustmentWeekdays.contains(weekday) || isHoliday {
-                date = calendar.date(byAdding: .day, value: -1, to: date) ?? date
+                date = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -1, to: date) ?? date)
             } else {
                 break
             }
@@ -358,9 +358,9 @@ struct DateCalculator {
         case .paymentDate:
             return adjustedDate
         case .dayAfter:
-            return calendar.date(byAdding: .day, value: 1, to: adjustedDate) ?? adjustedDate
+            return calendar.startOfDay(for: calendar.date(byAdding: .day, value: 1, to: adjustedDate) ?? adjustedDate)
         case .dayBefore:
-            return calendar.date(byAdding: .day, value: -1, to: adjustedDate) ?? adjustedDate
+            return calendar.startOfDay(for: calendar.date(byAdding: .day, value: -1, to: adjustedDate) ?? adjustedDate)
         }
     }
 

@@ -27,6 +27,36 @@ enum OccurrenceMatching {
         }
     }
 
+    /// Prefer scheduled-date records, then assign each legacy display-date record only once.
+    static func matchOccurrences(
+        for budgetItem: BudgetItem,
+        dates: [(scheduled: Date, display: Date)],
+        in occurrences: [Occurrence]
+    ) -> [Date: Occurrence] {
+        let calendar = Calendar.current
+        let candidates = occurrences.filter { $0.budgetItem?.id == budgetItem.id }
+        let orderedDates = dates.sorted { $0.scheduled < $1.scheduled }
+        var matches: [Date: Occurrence] = [:]
+        var claimed: Set<UUID> = []
+        for dates in orderedDates {
+            if let occurrence = candidates.first(where: {
+                !claimed.contains($0.id) && calendar.isDate($0.dueDate, inSameDayAs: dates.scheduled)
+            }) {
+                matches[dates.scheduled] = occurrence
+                claimed.insert(occurrence.id)
+            }
+        }
+        for dates in orderedDates where matches[dates.scheduled] == nil {
+            if let occurrence = candidates.first(where: {
+                !claimed.contains($0.id) && calendar.isDate($0.dueDate, inSameDayAs: dates.display)
+            }) {
+                matches[dates.scheduled] = occurrence
+                claimed.insert(occurrence.id)
+            }
+        }
+        return matches
+    }
+
     /// Confirm an occurrence, creating one if needed. Returns the ID to sync.
     @MainActor
     @discardableResult

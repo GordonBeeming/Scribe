@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import Scribe
 
 @Suite("DashboardViewModel Tests")
@@ -338,6 +339,80 @@ struct DashboardViewModelTests {
         #expect(payment.isConfirmed)
         #expect(previous.totalIncome == 1000)
         #expect(groups.dropFirst().allSatisfy { $0.items.isEmpty })
+    }
+
+    @Test("Clock changes keep weekly boundaries and Sunday payments aligned")
+    func previousWeekMidnightBoundary() throws {
+        if let zone = ProcessInfo.processInfo.environment["TZ"] {
+            #expect(TimeZone.current.identifier == zone)
+        }
+        let today = makeDate(year: 2026, month: 3, day: 15)
+        let reference = makeDate(year: 2026, month: 3, day: 8)
+        let expense = BudgetItem(name: "Rent", type: .expense, amount: 100,
+                                 frequency: .weekly, referenceDate: reference, category: .housing)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [expense], occurrences: [], anchor: .fixedDay(weekday: 1),
+            range: .days7, holidays: [], includingPreviousWeek: true, now: today
+        )
+        #expect(groups.count >= 2)
+        #expect(groups[0].startDate == reference)
+        #expect(groups[0].endDate == makeDate(year: 2026, month: 3, day: 14))
+        #expect(groups[1].startDate == today)
+        #expect(groups[1].items.count == 1)
+        #expect(groups[1].items.first?.dueDate == today)
+    }
+
+    @Test("Payments sharing a display date keep separate confirmations and amounts")
+    @MainActor
+    func sharedDisplayDatePayments() throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: SharedModelContainer.schema, configurations: [config])
+        let context = container.mainContext
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let firstScheduled = makeDate(year: 2026, month: 10, day: 7)
+        let secondScheduled = makeDate(year: 2026, month: 10, day: 14)
+        let displayDate = makeDate(year: 2026, month: 10, day: 6)
+        let holidays = Set((8...14).map { makeDate(year: 2026, month: 10, day: $0) })
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 1000, frequency: .weekly,
+            referenceDate: firstScheduled, category: .income,
+            budgetReflection: .dayBefore, publicHolidayCountryCode: "AU"
+        )
+        context.insert(income)
+        let legacy = Occurrence(dueDate: displayDate, expectedAmount: 1000, actualAmount: 900,
+                                status: .confirmed, budgetItem: income)
+        context.insert(legacy)
+        try context.save()
+        func previousWeek() throws -> DashboardViewModel.WeekGroup {
+            let saved = try context.fetch(FetchDescriptor<Occurrence>())
+            return try #require(viewModel.weeklyGroups(
+                budgetItems: [income], occurrences: saved, anchor: .fixedDay(weekday: 2),
+                range: .days14, holidays: holidays, includingPreviousWeek: true, now: today
+            ).first)
+        }
+        let previous = try previousWeek()
+        #expect(previous.items.count == 2)
+        #expect(Set(previous.items.map(\.id)).count == 2)
+        #expect(previous.items.allSatisfy { $0.dueDate == displayDate })
+        #expect(previous.confirmedCount == 1)
+        #expect(previous.totalIncome == 1900)
+        let pending = try #require(previous.items.first { !$0.isConfirmed })
+        #expect(pending.occurrenceDate == secondScheduled)
+        let secondID = OccurrenceMatching.confirm(budgetItem: income, dueDate: pending.occurrenceDate,
+                                                 amount: pending.amount, existingOccurrence: pending.occurrence,
+                                                 in: context)
+        let second = try #require(context.fetch(FetchDescriptor<Occurrence>()).first { $0.id == secondID })
+        #expect(second.dueDate == secondScheduled)
+        OccurrenceMatching.adjustAmount(occurrence: second, newAmount: 800, in: context)
+        let confirmed = try previousWeek()
+        #expect(confirmed.confirmedCount == 2)
+        #expect(confirmed.totalIncome == 1700)
+        #expect(confirmed.items.first { $0.occurrenceDate == secondScheduled }?.id == pending.id)
+        OccurrenceMatching.toggleSkip(budgetItem: income, dueDate: secondScheduled, amount: 1000,
+                                     existingOccurrence: second, in: context)
+        #expect(try previousWeek().totalIncome == 900)
+        #expect(legacy.status == .confirmed)
+        #expect(legacy.actualAmount == 900)
     }
 
     // MARK: - effectiveBalanceAmount Tests

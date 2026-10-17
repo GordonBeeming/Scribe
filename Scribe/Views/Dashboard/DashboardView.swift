@@ -172,7 +172,7 @@ struct DashboardView: View {
             }
             let id = OccurrenceMatching.confirm(
                 budgetItem: item.budgetItem,
-                dueDate: item.dueDate,
+                dueDate: item.occurrenceDate,
                 amount: item.amount,
                 existingOccurrence: item.occurrence,
                 in: modelContext
@@ -184,7 +184,7 @@ struct DashboardView: View {
     private func scheduleNextIrregular(_ item: DashboardViewModel.UpcomingItem, nextDate: Date?) {
         let id = OccurrenceMatching.confirm(
             budgetItem: item.budgetItem,
-            dueDate: item.dueDate,
+            dueDate: item.occurrenceDate,
             amount: item.amount,
             existingOccurrence: item.occurrence,
             in: modelContext
@@ -195,7 +195,7 @@ struct DashboardView: View {
             item.budgetItem.referenceDate = nextDate
         } else {
             // One-time payment — prevent any future occurrences by ending the item at this due date.
-            item.budgetItem.endDate = item.dueDate
+            item.budgetItem.endDate = item.occurrenceDate
         }
         item.budgetItem.modifiedAt = Date()
         try? modelContext.save()
@@ -281,7 +281,7 @@ struct DashboardView: View {
     private func skipOccurrence(_ item: DashboardViewModel.UpcomingItem) {
         let id = OccurrenceMatching.toggleSkip(
             budgetItem: item.budgetItem,
-            dueDate: item.dueDate,
+            dueDate: item.occurrenceDate,
             amount: item.amount,
             existingOccurrence: item.occurrence,
             in: modelContext

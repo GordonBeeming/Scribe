@@ -12,6 +12,9 @@ final class DashboardViewModel {
         let dueDate: Date
         let amount: Decimal
         let occurrence: Occurrence?
+        var scheduledDate: Date? = nil
+
+        var occurrenceDate: Date { scheduledDate ?? dueDate }
 
         var isConfirmed: Bool {
             occurrence?.status == .confirmed
@@ -151,7 +154,7 @@ final class DashboardViewModel {
         let todayWeekday = calendar.component(.weekday, from: today)
         var diff = todayWeekday - anchorWeekday
         if diff < 0 { diff += 7 }
-        return calendar.date(byAdding: .day, value: -diff, to: today) ?? today
+        return calendar.startOfDay(for: calendar.date(byAdding: .day, value: -diff, to: today) ?? today)
     }
 
     func autoConfirmationCutoff(
@@ -174,7 +177,7 @@ final class DashboardViewModel {
                 range: range, holidays: holidays, today: today
             )
             if let previousStart = calendar.date(byAdding: .day, value: -7, to: start) {
-                cutoff = min(cutoff, previousStart)
+                cutoff = min(cutoff, calendar.startOfDay(for: previousStart))
             }
         }
         return cutoff
@@ -217,34 +220,46 @@ final class DashboardViewModel {
             ? calendar.date(byAdding: .day, value: -7, to: weekStart) ?? weekStart
             : weekStart
 
+        currentStart = calendar.startOfDay(for: currentStart)
+        let queryStart = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -1, to: currentStart) ?? currentStart)
+        // The last week can extend six days past the range, and a payment can shift back eight days.
+        let queryEnd = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 14, to: endDate) ?? endDate)
+        var schedules: [UUID: [Date]] = [:]
+        var matches: [UUID: [Date: Occurrence]] = [:]
+        for item in budgetItems where item.isActive {
+            let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd).filter { date in
+                item.endDate.map { date <= calendar.startOfDay(for: $0) } ?? true
+            }
+            schedules[item.id] = dates
+            matches[item.id] = OccurrenceMatching.matchOccurrences(
+                for: item,
+                dates: dates.map { date in
+                    (scheduled: date, display: DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays))
+                },
+                in: occurrences
+            )
+        }
+
         while currentStart <= endDate {
-            let currentEnd = calendar.date(byAdding: .day, value: 6, to: currentStart) ?? currentStart
+            let currentEnd = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 6, to: currentStart) ?? currentStart)
 
             // Collect budget items for this week
             var weekItems: [UpcomingItem] = []
-            let queryStart = calendar.date(byAdding: .day, value: -1, to: currentStart) ?? currentStart
-            // Pay-day adjustment can move back seven days, plus one for day-before reflection.
-            let queryEnd = calendar.date(byAdding: .day, value: 8, to: currentEnd) ?? currentEnd
-
             for item in budgetItems where item.isActive {
-                let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)
+                let dates = schedules[item.id] ?? []
                 for date in dates {
                     if let itemEndDate = item.endDate, date > calendar.startOfDay(for: itemEndDate) { continue }
                     let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
                     guard displayDate >= currentStart && displayDate <= currentEnd else { continue }
                     let amount = item.effectiveAmount(on: date)
-                    let existingOccurrence = OccurrenceMatching.findOccurrence(
-                        for: item,
-                        scheduledDate: date,
-                        displayDate: displayDate,
-                        in: occurrences
-                    )
+                    let existingOccurrence = matches[item.id]?[date]
                     weekItems.append(UpcomingItem(
-                        id: existingOccurrence?.id ?? UUID(),
+                        id: Occurrence.deterministicID(budgetItemID: item.id, dueDate: date),
                         budgetItem: item,
                         dueDate: displayDate,
                         amount: amount,
-                        occurrence: existingOccurrence
+                        occurrence: existingOccurrence,
+                        scheduledDate: date
                     ))
                 }
             }
@@ -254,7 +269,7 @@ final class DashboardViewModel {
             preliminaryGroups.append((start: currentStart, end: currentEnd, items: weekItems))
 
             guard let nextStart = calendar.date(byAdding: .day, value: 7, to: currentStart) else { break }
-            currentStart = nextStart
+            currentStart = calendar.startOfDay(for: nextStart)
         }
 
         // Cumulative net carried across weeks (only surfaced when the rolling-net setting is on).
