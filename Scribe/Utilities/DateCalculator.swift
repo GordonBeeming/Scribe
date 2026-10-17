@@ -172,11 +172,13 @@ struct DateCalculator {
         let refDay = calendar.startOfDay(for: reference)
         let startDay = calendar.startOfDay(for: start)
         let endDay = calendar.startOfDay(for: end)
-        guard let daysFromReference = calendar.dateComponents([.day], from: refDay, to: startDay).day else {
+        guard let referenceOrdinal = calendar.ordinality(of: .day, in: .era, for: refDay),
+              let startOrdinal = calendar.ordinality(of: .day, in: .era, for: startDay) else {
             return []
         }
+        let daysFromReference = startOrdinal - referenceOrdinal
 
-        // Calendar days keep the recurrence on its weekday across 23- and 25-hour days.
+        // Day ordinals also handle reference dates whose midnight is skipped by a clock change.
         let offset = (intervalDays - daysFromReference % intervalDays) % intervalDays
         guard let first = calendar.date(byAdding: .day, value: offset, to: startDay) else { return [] }
         var current = calendar.startOfDay(for: first)
