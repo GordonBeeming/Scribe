@@ -12,6 +12,9 @@ final class DashboardViewModel {
         let dueDate: Date
         let amount: Decimal
         let occurrence: Occurrence?
+        var scheduledDate: Date? = nil
+
+        var occurrenceDate: Date { scheduledDate ?? dueDate }
 
         var isConfirmed: Bool {
             occurrence?.status == .confirmed
@@ -116,20 +119,15 @@ final class DashboardViewModel {
         var delta: Decimal { totalIncome - totalExpenses }
     }
 
-    func weeklyGroups(
+    private func currentWeekStart(
         budgetItems: [BudgetItem],
-        occurrences: [Occurrence],
         anchor: DashboardSectionAnchor,
         range: DefaultRange,
         holidays: Set<Date>,
-        exchangeRates: [String: Double] = [:],
-        baseCurrency: String = "AUD",
-        rollingNet: Bool = false
-    ) -> [WeekGroup] {
+        today: Date
+    ) -> Date {
         let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
         let endDate = range.endDate(from: today)
-
         // Resolve anchor weekday
         let anchorWeekday: Int
         switch anchor {
@@ -153,43 +151,115 @@ final class DashboardViewModel {
         }
 
         // Find most recent anchor weekday on or before today
-        var weekStart = today
         let todayWeekday = calendar.component(.weekday, from: today)
         var diff = todayWeekday - anchorWeekday
         if diff < 0 { diff += 7 }
-        weekStart = calendar.date(byAdding: .day, value: -diff, to: today) ?? today
+        return calendar.startOfDay(for: calendar.date(byAdding: .day, value: -diff, to: today) ?? today)
+    }
+
+    func autoConfirmationCutoff(
+        lookbackDays: Int,
+        budgetItems: [BudgetItem],
+        sections: [DashboardSection],
+        range: DefaultRange,
+        holidays: Set<Date>,
+        now: Date = Date()
+    ) -> Date? {
+        guard lookbackDays > 0 else { return nil }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        guard var cutoff = calendar.date(byAdding: .day, value: -lookbackDays, to: today) else { return nil }
+
+        // Unchecked payments in either visible week must remain available for manual reconciliation.
+        for section in sections where section.isEnabled && section.sectionType == .detailedWeekly {
+            let start = currentWeekStart(
+                budgetItems: budgetItems, anchor: section.anchor,
+                range: range, holidays: holidays, today: today
+            )
+            if let previousStart = calendar.date(byAdding: .day, value: -7, to: start) {
+                cutoff = min(cutoff, calendar.startOfDay(for: previousStart))
+            }
+        }
+        return cutoff
+    }
+
+    func autoConfirmationDates(for item: BudgetItem, before cutoff: Date, holidays: Set<Date>) -> [Date] {
+        let calendar = Calendar.current
+        guard item.frequency != .irregular,
+              let scanStart = calendar.date(byAdding: .day, value: -30, to: cutoff) else { return [] }
+        return DateCalculator.occurrenceDates(for: item, in: scanStart...cutoff).filter { date in
+            date < cutoff && DateCalculator.budgetDisplayDate(
+                for: item, scheduledDate: date, holidays: holidays
+            ) < cutoff
+        }
+    }
+
+    func weeklyGroups(
+        budgetItems: [BudgetItem],
+        occurrences: [Occurrence],
+        anchor: DashboardSectionAnchor,
+        range: DefaultRange,
+        holidays: Set<Date>,
+        exchangeRates: [String: Double] = [:],
+        baseCurrency: String = "AUD",
+        rollingNet: Bool = false,
+        includingPreviousWeek: Bool = false,
+        now: Date = Date()
+    ) -> [WeekGroup] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let endDate = range.endDate(from: today)
+
+        let weekStart = currentWeekStart(
+            budgetItems: budgetItems, anchor: anchor, range: range, holidays: holidays, today: today
+        )
 
         // Generate week boundaries covering the range
         var preliminaryGroups: [(start: Date, end: Date, items: [UpcomingItem])] = []
-        var currentStart = weekStart
+        var currentStart = includingPreviousWeek
+            ? calendar.date(byAdding: .day, value: -7, to: weekStart) ?? weekStart
+            : weekStart
+
+        currentStart = calendar.startOfDay(for: currentStart)
+        let queryStart = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -1, to: currentStart) ?? currentStart)
+        // The last week can extend six days past the range, and a payment can shift back eight days.
+        let queryEnd = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 14, to: endDate) ?? endDate)
+        var schedules: [UUID: [Date]] = [:]
+        var matches: [UUID: [Date: Occurrence]] = [:]
+        for item in budgetItems where item.isActive {
+            let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd).filter { date in
+                item.endDate.map { date <= calendar.startOfDay(for: $0) } ?? true
+            }
+            schedules[item.id] = dates
+            matches[item.id] = OccurrenceMatching.matchOccurrences(
+                for: item,
+                dates: dates.map { date in
+                    (scheduled: date, display: DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays))
+                },
+                in: occurrences
+            )
+        }
 
         while currentStart <= endDate {
-            let currentEnd = calendar.date(byAdding: .day, value: 6, to: currentStart) ?? currentStart
+            let currentEnd = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 6, to: currentStart) ?? currentStart)
 
             // Collect budget items for this week
             var weekItems: [UpcomingItem] = []
-            let queryStart = calendar.date(byAdding: .day, value: -1, to: currentStart) ?? currentStart
-            let queryEnd = calendar.date(byAdding: .day, value: 1, to: currentEnd) ?? currentEnd
-
             for item in budgetItems where item.isActive {
-                let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)
+                let dates = schedules[item.id] ?? []
                 for date in dates {
                     if let itemEndDate = item.endDate, date > calendar.startOfDay(for: itemEndDate) { continue }
                     let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: date, holidays: holidays)
                     guard displayDate >= currentStart && displayDate <= currentEnd else { continue }
                     let amount = item.effectiveAmount(on: date)
-                    let existingOccurrence = OccurrenceMatching.findOccurrence(
-                        for: item,
-                        scheduledDate: date,
-                        displayDate: displayDate,
-                        in: occurrences
-                    )
+                    let existingOccurrence = matches[item.id]?[date]
                     weekItems.append(UpcomingItem(
-                        id: existingOccurrence?.id ?? UUID(),
+                        id: Occurrence.deterministicID(budgetItemID: item.id, dueDate: date),
                         budgetItem: item,
                         dueDate: displayDate,
                         amount: amount,
-                        occurrence: existingOccurrence
+                        occurrence: existingOccurrence,
+                        scheduledDate: date
                     ))
                 }
             }
@@ -199,7 +269,7 @@ final class DashboardViewModel {
             preliminaryGroups.append((start: currentStart, end: currentEnd, items: weekItems))
 
             guard let nextStart = calendar.date(byAdding: .day, value: 7, to: currentStart) else { break }
-            currentStart = nextStart
+            currentStart = calendar.startOfDay(for: nextStart)
         }
 
         // Cumulative net carried across weeks (only surfaced when the rolling-net setting is on).
@@ -216,7 +286,9 @@ final class DashboardViewModel {
                 .reduce(Decimal.zero) { $0 + toBase($1.effectiveBalanceAmount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
 
             let weekNet = totalIncome - totalExpenses
-            cumulativeNet += weekNet
+            if pg.start >= weekStart {
+                cumulativeNet += weekNet
+            }
 
             let pendingExpenses = pg.items
                 .filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
@@ -231,7 +303,7 @@ final class DashboardViewModel {
                 items: pg.items,
                 totalIncome: totalIncome,
                 totalExpenses: totalExpenses,
-                rollingNet: rollingNet ? cumulativeNet : nil,
+                rollingNet: rollingNet && pg.start >= weekStart ? cumulativeNet : nil,
                 confirmedCount: pg.items.filter(\.isConfirmed).count,
                 totalCount: pg.items.count,
                 pendingExpenses: pendingExpenses

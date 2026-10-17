@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import Scribe
 
 @Suite("DashboardViewModel Tests")
@@ -211,6 +212,207 @@ struct DashboardViewModelTests {
         if let first = groups.first, let last = groups.last, groups.count > 1 {
             #expect((last.rollingNet ?? 0) > (first.rollingNet ?? 0))
         }
+    }
+
+    @Test("Previous week precedes the current week across anchors and year boundaries",
+          arguments: [(2026, 10, 12, 2), (2026, 10, 18, 2), (2026, 10, 17, 5), (2027, 1, 1, 2)])
+    func previousWeekBoundaries(year: Int, month: Int, day: Int, weekday: Int) throws {
+        let today = makeDate(year: year, month: month, day: day)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [], occurrences: [], anchor: .fixedDay(weekday: weekday),
+            range: .days7, holidays: [], includingPreviousWeek: true, now: today
+        )
+        #expect(groups.count >= 2)
+        let previous = try #require(groups.first)
+        let current = groups[1]
+        #expect(calendar.component(.weekday, from: previous.startDate) == weekday)
+        #expect(calendar.date(byAdding: .day, value: 7, to: previous.startDate) == current.startDate)
+        #expect(previous.endDate < today)
+        #expect(current.startDate <= today && current.endDate >= today)
+    }
+
+    @Test("Previous week preserves pending, confirmed and skipped payments without changing rolling net")
+    func previousWeekPayments() throws {
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let dueDate = makeDate(year: 2026, month: 10, day: 5)
+        let items = ["Pending", "Confirmed", "Skipped"].map {
+            BudgetItem(name: $0, type: .expense, amount: 100, frequency: .weekly,
+                       referenceDate: dueDate, category: .other)
+        }
+        let confirmed = Occurrence(dueDate: dueDate, expectedAmount: 100,
+                                   actualAmount: 90, status: .confirmed, budgetItem: items[1])
+        let skipped = Occurrence(dueDate: dueDate, expectedAmount: 100,
+                                 status: .skipped, budgetItem: items[2])
+        let groups = viewModel.weeklyGroups(
+            budgetItems: items, occurrences: [confirmed, skipped], anchor: .fixedDay(weekday: 2),
+            range: .days14, holidays: [], rollingNet: true, includingPreviousWeek: true, now: today
+        )
+        let previous = try #require(groups.first)
+        #expect(previous.startDate == dueDate)
+        #expect(previous.totalCount == 3)
+        #expect(previous.confirmedCount == 1)
+        #expect(previous.pendingExpenses == 100)
+        #expect(previous.totalExpenses == 190)
+        #expect(previous.rollingNet == nil)
+        #expect(previous.items.first { $0.budgetItem.name == "Pending" }?.occurrence == nil)
+        let current = groups[1]
+        #expect(current.rollingNet == current.delta)
+        #expect(groups[2].rollingNet == current.delta + groups[2].delta)
+    }
+
+    @Test("Auto-confirm protects the previous week and respects longer or disabled lookback")
+    func previousWeekAutoConfirmationCutoff() {
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let section = DashboardSection(sectionType: .detailedWeekly,
+                                       anchor: .fixedDay(weekday: 2), label: "Weekly")
+        func cutoff(_ days: Int) -> Date? {
+            viewModel.autoConfirmationCutoff(lookbackDays: days, budgetItems: [], sections: [section],
+                                            range: .days14, holidays: [], now: today)
+        }
+        #expect(cutoff(5) == makeDate(year: 2026, month: 10, day: 5))
+        #expect(cutoff(14) == makeDate(year: 2026, month: 10, day: 3))
+        #expect(cutoff(0) == nil)
+        section.isEnabled = false
+        #expect(cutoff(5) == makeDate(year: 2026, month: 10, day: 12))
+        section.isEnabled = true
+        section.anchor = .fixedDay(weekday: 5)
+        #expect(cutoff(5) == makeDate(year: 2026, month: 10, day: 8))
+    }
+
+    @Test("Auto-confirm preserves income reflected into the previous week")
+    func previousWeekReflectedIncome() {
+        let cutoff = makeDate(year: 2026, month: 10, day: 5)
+        let scheduledDate = makeDate(year: 2026, month: 10, day: 4)
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 1000, frequency: .weekly,
+            referenceDate: scheduledDate, category: .income, budgetReflection: .dayAfter
+        )
+        let dates = viewModel.autoConfirmationDates(for: income, before: cutoff, holidays: [])
+        #expect(!dates.contains(scheduledDate))
+        #expect(dates.contains(makeDate(year: 2026, month: 9, day: 27)))
+    }
+
+    @Test("Previous-year holidays preserve adjusted income dates and saved confirmations")
+    func previousYearHolidayConfirmation() throws {
+        let today = makeDate(year: 2027, month: 1, day: 1)
+        let holiday = makeDate(year: 2026, month: 12, day: 25)
+        let paymentDate = makeDate(year: 2026, month: 12, day: 24)
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 1000, frequency: .weekly,
+            referenceDate: holiday, category: .income, publicHolidayCountryCode: "AU"
+        )
+        let occurrence = Occurrence(dueDate: paymentDate, expectedAmount: 1000,
+                                    status: .confirmed, budgetItem: income)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [income], occurrences: [occurrence], anchor: .fixedDay(weekday: 2),
+            range: .days14, holidays: [holiday], includingPreviousWeek: true, now: today
+        )
+        let previous = try #require(groups.first)
+        let payment = try #require(previous.items.first)
+        #expect(payment.dueDate == paymentDate)
+        #expect(payment.occurrence?.id == occurrence.id)
+        #expect(payment.isConfirmed)
+        #expect(previous.confirmedCount == 1)
+        #expect(previous.totalIncome == 1000)
+    }
+
+    @Test("Previous week includes income shifted back by consecutive holidays and reflection")
+    func previousWeekCascadingHolidayAdjustment() throws {
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let paymentDate = makeDate(year: 2026, month: 10, day: 6)
+        let holidays = Set((8...14).map { makeDate(year: 2026, month: 10, day: $0) })
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 1000, frequency: .monthly, dayOfMonth: 14,
+            category: .income, budgetReflection: .dayBefore, publicHolidayCountryCode: "AU"
+        )
+        let occurrence = Occurrence(dueDate: paymentDate, expectedAmount: 1000,
+                                    status: .confirmed, budgetItem: income)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [income], occurrences: [occurrence], anchor: .fixedDay(weekday: 2),
+            range: .days14, holidays: holidays, includingPreviousWeek: true, now: today
+        )
+        let previous = try #require(groups.first)
+        let payment = try #require(previous.items.first)
+        #expect(previous.items.count == 1)
+        #expect(payment.dueDate == paymentDate)
+        #expect(payment.occurrence?.id == occurrence.id)
+        #expect(payment.isConfirmed)
+        #expect(previous.totalIncome == 1000)
+        #expect(groups.dropFirst().allSatisfy { $0.items.isEmpty })
+    }
+
+    @Test("Clock changes keep weekly boundaries and Sunday payments aligned")
+    func previousWeekMidnightBoundary() throws {
+        if let zone = ProcessInfo.processInfo.environment["TZ"] {
+            #expect(TimeZone.current.identifier == zone)
+        }
+        let today = makeDate(year: 2026, month: 3, day: 15)
+        let reference = makeDate(year: 2026, month: 3, day: 8)
+        let expense = BudgetItem(name: "Rent", type: .expense, amount: 100,
+                                 frequency: .weekly, referenceDate: reference, category: .housing)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [expense], occurrences: [], anchor: .fixedDay(weekday: 1),
+            range: .days7, holidays: [], includingPreviousWeek: true, now: today
+        )
+        #expect(groups.count >= 2)
+        #expect(groups[0].startDate == reference)
+        #expect(groups[0].endDate == makeDate(year: 2026, month: 3, day: 14))
+        #expect(groups[1].startDate == today)
+        #expect(groups[1].items.count == 1)
+        #expect(groups[1].items.first?.dueDate == today)
+    }
+
+    @Test("Payments sharing a display date keep separate confirmations and amounts")
+    @MainActor
+    func sharedDisplayDatePayments() throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: SharedModelContainer.schema, configurations: [config])
+        let context = container.mainContext
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let firstScheduled = makeDate(year: 2026, month: 10, day: 7)
+        let secondScheduled = makeDate(year: 2026, month: 10, day: 14)
+        let displayDate = makeDate(year: 2026, month: 10, day: 6)
+        let holidays = Set((8...14).map { makeDate(year: 2026, month: 10, day: $0) })
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 1000, frequency: .weekly,
+            referenceDate: firstScheduled, category: .income,
+            budgetReflection: .dayBefore, publicHolidayCountryCode: "AU"
+        )
+        context.insert(income)
+        let legacy = Occurrence(dueDate: displayDate, expectedAmount: 1000, actualAmount: 900,
+                                status: .confirmed, budgetItem: income)
+        context.insert(legacy)
+        try context.save()
+        func previousWeek() throws -> DashboardViewModel.WeekGroup {
+            let saved = try context.fetch(FetchDescriptor<Occurrence>())
+            return try #require(viewModel.weeklyGroups(
+                budgetItems: [income], occurrences: saved, anchor: .fixedDay(weekday: 2),
+                range: .days14, holidays: holidays, includingPreviousWeek: true, now: today
+            ).first)
+        }
+        let previous = try previousWeek()
+        #expect(previous.items.count == 2)
+        #expect(Set(previous.items.map(\.id)).count == 2)
+        #expect(previous.items.allSatisfy { $0.dueDate == displayDate })
+        #expect(previous.confirmedCount == 1)
+        #expect(previous.totalIncome == 1900)
+        let pending = try #require(previous.items.first { !$0.isConfirmed })
+        #expect(pending.occurrenceDate == secondScheduled)
+        let secondID = OccurrenceMatching.confirm(budgetItem: income, dueDate: pending.occurrenceDate,
+                                                 amount: pending.amount, existingOccurrence: pending.occurrence,
+                                                 in: context)
+        let second = try #require(context.fetch(FetchDescriptor<Occurrence>()).first { $0.id == secondID })
+        #expect(second.dueDate == secondScheduled)
+        OccurrenceMatching.adjustAmount(occurrence: second, newAmount: 800, in: context)
+        let confirmed = try previousWeek()
+        #expect(confirmed.confirmedCount == 2)
+        #expect(confirmed.totalIncome == 1700)
+        #expect(confirmed.items.first { $0.occurrenceDate == secondScheduled }?.id == pending.id)
+        OccurrenceMatching.toggleSkip(budgetItem: income, dueDate: secondScheduled, amount: 1000,
+                                     existingOccurrence: second, in: context)
+        #expect(try previousWeek().totalIncome == 900)
+        #expect(legacy.status == .confirmed)
+        #expect(legacy.actualAmount == 900)
     }
 
     // MARK: - effectiveBalanceAmount Tests

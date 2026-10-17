@@ -87,6 +87,61 @@ struct DateCalculatorTests {
         }
     }
 
+    @Test("Weekly and fortnightly dates preserve confirmation matches across DST",
+          arguments: [("Australia/Sydney", 10, 5, 9, 21, 10, 19),
+                      ("Australia/Sydney", 4, 6, 3, 23, 4, 20),
+                      ("America/New_York", 3, 9, 2, 23, 3, 23),
+                      ("America/New_York", 11, 2, 10, 19, 11, 16),
+                      ("America/Havana", 3, 15, 3, 1, 3, 29),
+                      ("America/Havana", 3, 8, 2, 22, 3, 22)])
+    func intervalDatesAcrossDST(
+        zone: String, referenceMonth: Int, referenceDay: Int,
+        startMonth: Int, startDay: Int, endMonth: Int, endDay: Int
+    ) throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: zone))
+        func date(_ month: Int, _ day: Int) throws -> Date {
+            try #require(calendar.date(from: DateComponents(year: 2026, month: month, day: day)))
+        }
+        let reference = try date(referenceMonth, referenceDay)
+        let start = try date(startMonth, startDay)
+        let end = try date(endMonth, endDay)
+        for interval in [7, 14] {
+            let dates = DateCalculator.intervalDates(
+                reference: reference, intervalDays: interval, start: start, end: end, calendar: calendar
+            )
+            #expect(dates.count == (interval == 7 ? 5 : 3))
+            #expect(dates.contains(reference))
+            let next = try #require(calendar.date(byAdding: .day, value: interval, to: reference))
+            let afterStart = calendar.startOfDay(for: next)
+            let afterDates = DateCalculator.intervalDates(
+                reference: reference, intervalDays: interval,
+                start: afterStart, end: end, calendar: calendar
+            )
+            #expect(afterDates.first == afterStart)
+            #expect(afterDates.last == end)
+            let item = BudgetItem(name: "Rent", type: .expense, amount: 100,
+                                  frequency: .weekly, referenceDate: reference, category: .housing)
+            let saved = Occurrence(dueDate: start, expectedAmount: 100, actualAmount: 90,
+                                   status: .confirmed, budgetItem: item)
+            let first = try #require(dates.first)
+            #expect(first == start)
+            let match = OccurrenceMatching.findOccurrence(for: item, scheduledDate: first,
+                                                         displayDate: first, in: [saved])
+            #expect(match?.id == saved.id)
+            #expect(match?.actualAmount == 90)
+            #expect(dates.last == end)
+            #expect(zip(dates, dates.dropFirst()).allSatisfy { $0 < $1 })
+            if interval == 14 {
+                #expect(dates == [start, reference, end])
+            }
+            for generated in dates {
+                #expect(calendar.component(.weekday, from: generated) == calendar.component(.weekday, from: reference))
+                #expect(generated == calendar.startOfDay(for: generated))
+            }
+        }
+    }
+
     // MARK: - Fortnightly
 
     @Test("Fortnightly item generates every 14 days")

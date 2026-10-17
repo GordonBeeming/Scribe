@@ -116,30 +116,38 @@ struct DashboardView: View {
                 holidays: holidays,
                 exchangeRates: ExchangeRateCache.shared.rates,
                 baseCurrency: ExchangeRateCache.shared.baseCurrency,
-                rollingNet: SettingsViewModel.currentRollingWeeklyNet()
+                rollingNet: SettingsViewModel.currentRollingWeeklyNet(),
+                includingPreviousWeek: true
             )
             let calendar = Calendar.current
             let today = calendar.startOfDay(for: Date())
             VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
                 ScribeSectionHeader(section.label, systemImage: "calendar.day.timeline.left")
+                ForEach(groups.filter { $0.endDate < today }) { group in
+                    weeklyCard(group, today: today)
+                }
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 340), spacing: ScribeDesign.Spacing.l)],
                     alignment: .leading,
                     spacing: ScribeDesign.Spacing.l
                 ) {
-                    ForEach(groups) { group in
-                        WeeklyBudgetCard(
-                            group: group,
-                            onConfirm: confirmOccurrence,
-                            onSkip: skipOccurrence,
-                            onTap: { selectedItem = $0.budgetItem },
-                            onAdjustAmount: adjustAmount,
-                            isCurrentWeek: group.startDate <= today && group.endDate >= today
-                        )
+                    ForEach(groups.filter { $0.endDate >= today }) { group in
+                        weeklyCard(group, today: today)
                     }
                 }
             }
         }
+    }
+
+    private func weeklyCard(_ group: DashboardViewModel.WeekGroup, today: Date) -> some View {
+        WeeklyBudgetCard(
+            group: group,
+            onConfirm: confirmOccurrence,
+            onSkip: skipOccurrence,
+            onTap: { selectedItem = $0.budgetItem },
+            onAdjustAmount: adjustAmount,
+            isCurrentWeek: group.startDate <= today && group.endDate >= today
+        )
     }
 
     private var emptyState: some View {
@@ -164,7 +172,7 @@ struct DashboardView: View {
             }
             let id = OccurrenceMatching.confirm(
                 budgetItem: item.budgetItem,
-                dueDate: item.dueDate,
+                dueDate: item.occurrenceDate,
                 amount: item.amount,
                 existingOccurrence: item.occurrence,
                 in: modelContext
@@ -176,7 +184,7 @@ struct DashboardView: View {
     private func scheduleNextIrregular(_ item: DashboardViewModel.UpcomingItem, nextDate: Date?) {
         let id = OccurrenceMatching.confirm(
             budgetItem: item.budgetItem,
-            dueDate: item.dueDate,
+            dueDate: item.occurrenceDate,
             amount: item.amount,
             existingOccurrence: item.occurrence,
             in: modelContext
@@ -187,7 +195,7 @@ struct DashboardView: View {
             item.budgetItem.referenceDate = nextDate
         } else {
             // One-time payment — prevent any future occurrences by ending the item at this due date.
-            item.budgetItem.endDate = item.dueDate
+            item.budgetItem.endDate = item.occurrenceDate
         }
         item.budgetItem.modifiedAt = Date()
         try? modelContext.save()
@@ -201,6 +209,8 @@ struct DashboardView: View {
         let year = calendar.component(.year, from: Date())
         var allHolidays: Set<Date> = []
         for code in countryCodes {
+            let previousDates = await HolidayService.shared.holidayDates(for: code, year: year - 1)
+            allHolidays.formUnion(previousDates)
             let dates = await HolidayService.shared.holidayDates(for: code, year: year)
             allHolidays.formUnion(dates)
             let nextDates = await HolidayService.shared.holidayDates(for: code, year: year + 1)
@@ -216,7 +226,14 @@ struct DashboardView: View {
 
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        guard let cutoffDate = calendar.date(byAdding: .day, value: -days, to: today) else { return }
+        guard let cutoffDate = viewModel.autoConfirmationCutoff(
+            lookbackDays: days,
+            budgetItems: activeItems,
+            sections: dashboardSections,
+            range: SettingsViewModel.currentDefaultRange(),
+            holidays: holidays,
+            now: today
+        ) else { return }
 
         // Pre-index existing occurrences by (budgetItemID, startOfDay) for O(1) lookup
         var existingOccurrenceKeys: Set<String> = []
@@ -229,10 +246,9 @@ struct DashboardView: View {
         var insertedIDs: [UUID] = []
 
         for item in activeItems where item.frequency != .irregular {
-            guard let scanStart = calendar.date(byAdding: .day, value: -30, to: cutoffDate) else { continue }
-            let dates = DateCalculator.occurrenceDates(for: item, in: scanStart...cutoffDate)
+            let dates = viewModel.autoConfirmationDates(for: item, before: cutoffDate, holidays: holidays)
 
-            for date in dates where date < cutoffDate {
+            for date in dates {
                 let dayKey = calendar.startOfDay(for: date)
                 let key = "\(item.id)_\(dayKey.timeIntervalSince1970)"
 
@@ -265,7 +281,7 @@ struct DashboardView: View {
     private func skipOccurrence(_ item: DashboardViewModel.UpcomingItem) {
         let id = OccurrenceMatching.toggleSkip(
             budgetItem: item.budgetItem,
-            dueDate: item.dueDate,
+            dueDate: item.occurrenceDate,
             amount: item.amount,
             existingOccurrence: item.occurrence,
             in: modelContext

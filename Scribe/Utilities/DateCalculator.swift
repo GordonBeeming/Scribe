@@ -92,9 +92,9 @@ struct DateCalculator {
         case .monthly:
             return monthlyDates(dayOfMonth: dayOfMonth, start: start, end: end)
         case .weekly:
-            return intervalDates(reference: referenceDate, intervalDays: 7, start: start, end: end)
+            return intervalDates(reference: referenceDate, intervalDays: 7, start: start, end: end, calendar: calendar)
         case .fortnightly:
-            return intervalDates(reference: referenceDate, intervalDays: 14, start: start, end: end)
+            return intervalDates(reference: referenceDate, intervalDays: 14, start: start, end: end, calendar: calendar)
         case .quarterly:
             return quarterlyDates(reference: referenceDate, start: start, end: end)
         case .yearly:
@@ -165,32 +165,30 @@ struct DateCalculator {
 
     // MARK: - Interval-based (weekly, fortnightly)
 
-    private static func intervalDates(reference: Date, intervalDays: Int, start: Date, end: Date) -> [Date] {
-        var results: [Date] = []
+    static func intervalDates(
+        reference: Date, intervalDays: Int, start: Date, end: Date, calendar: Calendar
+    ) -> [Date] {
+        guard intervalDays > 0 else { return [] }
         let refDay = calendar.startOfDay(for: reference)
-        let interval = TimeInterval(intervalDays * 86400)
-
-        // Calculate how many intervals from reference to start
-        let timeDiff = start.timeIntervalSince(refDay)
-        let periodsToStart: Int
-        if timeDiff >= 0 {
-            periodsToStart = Int(timeDiff / interval)
-        } else {
-            periodsToStart = Int(timeDiff / interval) - 1
+        let startDay = calendar.startOfDay(for: start)
+        let endDay = calendar.startOfDay(for: end)
+        guard let referenceOrdinal = calendar.ordinality(of: .day, in: .era, for: refDay),
+              let startOrdinal = calendar.ordinality(of: .day, in: .era, for: startDay) else {
+            return []
         }
+        let daysFromReference = startOrdinal - referenceOrdinal
 
-        // Start generating from just before the start date
-        var current = refDay.addingTimeInterval(interval * Double(periodsToStart))
-        current = calendar.startOfDay(for: current)
-
+        // Day ordinals also handle reference dates whose midnight is skipped by a clock change.
+        let offset = (intervalDays - daysFromReference % intervalDays) % intervalDays
+        guard let first = calendar.date(byAdding: .day, value: offset, to: startDay) else { return [] }
+        var current = calendar.startOfDay(for: first)
+        var results: [Date] = []
         for _ in 0..<1000 {
-            if current > end { break }
-            if current >= start {
-                results.append(current)
-            }
-            current = calendar.startOfDay(for: current.addingTimeInterval(interval))
+            if current > endDay { break }
+            results.append(current)
+            guard let next = calendar.date(byAdding: .day, value: intervalDays, to: current) else { break }
+            current = calendar.startOfDay(for: next)
         }
-
         return results
     }
 
@@ -331,7 +329,7 @@ struct DateCalculator {
             let weekday = calendar.component(.weekday, from: date)
             let isHoliday = holidays.contains(date)
             if adjustmentWeekdays.contains(weekday) || isHoliday {
-                date = calendar.date(byAdding: .day, value: -1, to: date) ?? date
+                date = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -1, to: date) ?? date)
             } else {
                 break
             }
@@ -360,9 +358,9 @@ struct DateCalculator {
         case .paymentDate:
             return adjustedDate
         case .dayAfter:
-            return calendar.date(byAdding: .day, value: 1, to: adjustedDate) ?? adjustedDate
+            return calendar.startOfDay(for: calendar.date(byAdding: .day, value: 1, to: adjustedDate) ?? adjustedDate)
         case .dayBefore:
-            return calendar.date(byAdding: .day, value: -1, to: adjustedDate) ?? adjustedDate
+            return calendar.startOfDay(for: calendar.date(byAdding: .day, value: -1, to: adjustedDate) ?? adjustedDate)
         }
     }
 

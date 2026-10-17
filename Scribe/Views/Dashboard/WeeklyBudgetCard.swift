@@ -8,7 +8,9 @@ struct WeeklyBudgetCard: View {
     var onAdjustAmount: ((DashboardViewModel.UpcomingItem, Decimal) -> Void)?
     var isCurrentWeek: Bool = false
 
-    @State private var isExpanded: Bool = true
+    @State private var expandedOverride: Bool?
+
+    private var isExpanded: Bool { expandedOverride ?? isCurrentWeek }
 
     private var net: Decimal { group.rollingNet ?? group.delta }
     private var netLabel: String { group.rollingNet != nil ? "Net (rolling)" : "Net" }
@@ -53,12 +55,11 @@ struct WeeklyBudgetCard: View {
                     .strokeBorder(ScribeTheme.accent.opacity(0.55), lineWidth: 1.5)
             }
         }
-        .onAppear { isExpanded = isCurrentWeek }
     }
 
     private var header: some View {
         Button {
-            withAnimation(.snappy) { isExpanded.toggle() }
+            withAnimation(.snappy) { expandedOverride = !isExpanded }
         } label: {
             VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
                 HStack(spacing: ScribeDesign.Spacing.s) {
@@ -93,6 +94,7 @@ struct WeeklyBudgetCard: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
 
     private func miniStat(_ title: String, _ amount: Decimal, type: ItemType?, alignment: HorizontalAlignment) -> some View {
