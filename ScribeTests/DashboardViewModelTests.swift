@@ -291,6 +291,30 @@ struct DashboardViewModelTests {
         #expect(dates.contains(makeDate(year: 2026, month: 9, day: 27)))
     }
 
+    @Test("Previous-year holidays preserve adjusted income dates and saved confirmations")
+    func previousYearHolidayConfirmation() throws {
+        let today = makeDate(year: 2027, month: 1, day: 1)
+        let holiday = makeDate(year: 2026, month: 12, day: 25)
+        let paymentDate = makeDate(year: 2026, month: 12, day: 24)
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 1000, frequency: .weekly,
+            referenceDate: holiday, category: .income, publicHolidayCountryCode: "AU"
+        )
+        let occurrence = Occurrence(dueDate: paymentDate, expectedAmount: 1000,
+                                    status: .confirmed, budgetItem: income)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [income], occurrences: [occurrence], anchor: .fixedDay(weekday: 2),
+            range: .days14, holidays: [holiday], includingPreviousWeek: true, now: today
+        )
+        let previous = try #require(groups.first)
+        let payment = try #require(previous.items.first)
+        #expect(payment.dueDate == paymentDate)
+        #expect(payment.occurrence?.id == occurrence.id)
+        #expect(payment.isConfirmed)
+        #expect(previous.confirmedCount == 1)
+        #expect(previous.totalIncome == 1000)
+    }
+
     // MARK: - effectiveBalanceAmount Tests
 
     @Test("Pending item uses projected amount")

@@ -209,6 +209,8 @@ struct DashboardView: View {
         let year = calendar.component(.year, from: Date())
         var allHolidays: Set<Date> = []
         for code in countryCodes {
+            let previousDates = await HolidayService.shared.holidayDates(for: code, year: year - 1)
+            allHolidays.formUnion(previousDates)
             let dates = await HolidayService.shared.holidayDates(for: code, year: year)
             allHolidays.formUnion(dates)
             let nextDates = await HolidayService.shared.holidayDates(for: code, year: year + 1)
