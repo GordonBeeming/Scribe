@@ -223,7 +223,8 @@ final class DashboardViewModel {
             // Collect budget items for this week
             var weekItems: [UpcomingItem] = []
             let queryStart = calendar.date(byAdding: .day, value: -1, to: currentStart) ?? currentStart
-            let queryEnd = calendar.date(byAdding: .day, value: 1, to: currentEnd) ?? currentEnd
+            // Pay-day adjustment can move back seven days, plus one for day-before reflection.
+            let queryEnd = calendar.date(byAdding: .day, value: 8, to: currentEnd) ?? currentEnd
 
             for item in budgetItems where item.isActive {
                 let dates = DateCalculator.occurrenceDates(for: item, in: queryStart...queryEnd)

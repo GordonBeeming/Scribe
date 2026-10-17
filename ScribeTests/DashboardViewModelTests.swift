@@ -315,6 +315,31 @@ struct DashboardViewModelTests {
         #expect(previous.totalIncome == 1000)
     }
 
+    @Test("Previous week includes income shifted back by consecutive holidays and reflection")
+    func previousWeekCascadingHolidayAdjustment() throws {
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let paymentDate = makeDate(year: 2026, month: 10, day: 6)
+        let holidays = Set((8...14).map { makeDate(year: 2026, month: 10, day: $0) })
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 1000, frequency: .monthly, dayOfMonth: 14,
+            category: .income, budgetReflection: .dayBefore, publicHolidayCountryCode: "AU"
+        )
+        let occurrence = Occurrence(dueDate: paymentDate, expectedAmount: 1000,
+                                    status: .confirmed, budgetItem: income)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [income], occurrences: [occurrence], anchor: .fixedDay(weekday: 2),
+            range: .days14, holidays: holidays, includingPreviousWeek: true, now: today
+        )
+        let previous = try #require(groups.first)
+        let payment = try #require(previous.items.first)
+        #expect(previous.items.count == 1)
+        #expect(payment.dueDate == paymentDate)
+        #expect(payment.occurrence?.id == occurrence.id)
+        #expect(payment.isConfirmed)
+        #expect(previous.totalIncome == 1000)
+        #expect(groups.dropFirst().allSatisfy { $0.items.isEmpty })
+    }
+
     // MARK: - effectiveBalanceAmount Tests
 
     @Test("Pending item uses projected amount")
