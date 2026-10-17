@@ -213,6 +213,84 @@ struct DashboardViewModelTests {
         }
     }
 
+    @Test("Previous week precedes the current week across anchors and year boundaries",
+          arguments: [(2026, 10, 12, 2), (2026, 10, 18, 2), (2026, 10, 17, 5), (2027, 1, 1, 2)])
+    func previousWeekBoundaries(year: Int, month: Int, day: Int, weekday: Int) throws {
+        let today = makeDate(year: year, month: month, day: day)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [], occurrences: [], anchor: .fixedDay(weekday: weekday),
+            range: .days7, holidays: [], includingPreviousWeek: true, now: today
+        )
+        #expect(groups.count >= 2)
+        let previous = try #require(groups.first)
+        let current = groups[1]
+        #expect(calendar.component(.weekday, from: previous.startDate) == weekday)
+        #expect(calendar.date(byAdding: .day, value: 7, to: previous.startDate) == current.startDate)
+        #expect(previous.endDate < today)
+        #expect(current.startDate <= today && current.endDate >= today)
+    }
+
+    @Test("Previous week preserves pending, confirmed and skipped payments without changing rolling net")
+    func previousWeekPayments() throws {
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let dueDate = makeDate(year: 2026, month: 10, day: 5)
+        let items = ["Pending", "Confirmed", "Skipped"].map {
+            BudgetItem(name: $0, type: .expense, amount: 100, frequency: .weekly,
+                       referenceDate: dueDate, category: .other)
+        }
+        let confirmed = Occurrence(dueDate: dueDate, expectedAmount: 100,
+                                   actualAmount: 90, status: .confirmed, budgetItem: items[1])
+        let skipped = Occurrence(dueDate: dueDate, expectedAmount: 100,
+                                 status: .skipped, budgetItem: items[2])
+        let groups = viewModel.weeklyGroups(
+            budgetItems: items, occurrences: [confirmed, skipped], anchor: .fixedDay(weekday: 2),
+            range: .days14, holidays: [], rollingNet: true, includingPreviousWeek: true, now: today
+        )
+        let previous = try #require(groups.first)
+        #expect(previous.startDate == dueDate)
+        #expect(previous.totalCount == 3)
+        #expect(previous.confirmedCount == 1)
+        #expect(previous.pendingExpenses == 100)
+        #expect(previous.totalExpenses == 190)
+        #expect(previous.rollingNet == nil)
+        #expect(previous.items.first { $0.budgetItem.name == "Pending" }?.occurrence == nil)
+        let current = groups[1]
+        #expect(current.rollingNet == current.delta)
+        #expect(groups[2].rollingNet == current.delta + groups[2].delta)
+    }
+
+    @Test("Auto-confirm protects the previous week and respects longer or disabled lookback")
+    func previousWeekAutoConfirmationCutoff() {
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let section = DashboardSection(sectionType: .detailedWeekly,
+                                       anchor: .fixedDay(weekday: 2), label: "Weekly")
+        func cutoff(_ days: Int) -> Date? {
+            viewModel.autoConfirmationCutoff(lookbackDays: days, budgetItems: [], sections: [section],
+                                            range: .days14, holidays: [], now: today)
+        }
+        #expect(cutoff(5) == makeDate(year: 2026, month: 10, day: 5))
+        #expect(cutoff(14) == makeDate(year: 2026, month: 10, day: 3))
+        #expect(cutoff(0) == nil)
+        section.isEnabled = false
+        #expect(cutoff(5) == makeDate(year: 2026, month: 10, day: 12))
+        section.isEnabled = true
+        section.anchor = .fixedDay(weekday: 5)
+        #expect(cutoff(5) == makeDate(year: 2026, month: 10, day: 8))
+    }
+
+    @Test("Auto-confirm preserves income reflected into the previous week")
+    func previousWeekReflectedIncome() {
+        let cutoff = makeDate(year: 2026, month: 10, day: 5)
+        let scheduledDate = makeDate(year: 2026, month: 10, day: 4)
+        let income = BudgetItem(
+            name: "Salary", type: .income, amount: 1000, frequency: .weekly,
+            referenceDate: scheduledDate, category: .income, budgetReflection: .dayAfter
+        )
+        let dates = viewModel.autoConfirmationDates(for: income, before: cutoff, holidays: [])
+        #expect(!dates.contains(scheduledDate))
+        #expect(dates.contains(makeDate(year: 2026, month: 9, day: 27)))
+    }
+
     // MARK: - effectiveBalanceAmount Tests
 
     @Test("Pending item uses projected amount")

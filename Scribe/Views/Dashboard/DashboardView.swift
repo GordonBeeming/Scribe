@@ -116,30 +116,38 @@ struct DashboardView: View {
                 holidays: holidays,
                 exchangeRates: ExchangeRateCache.shared.rates,
                 baseCurrency: ExchangeRateCache.shared.baseCurrency,
-                rollingNet: SettingsViewModel.currentRollingWeeklyNet()
+                rollingNet: SettingsViewModel.currentRollingWeeklyNet(),
+                includingPreviousWeek: true
             )
             let calendar = Calendar.current
             let today = calendar.startOfDay(for: Date())
             VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
                 ScribeSectionHeader(section.label, systemImage: "calendar.day.timeline.left")
+                ForEach(groups.filter { $0.endDate < today }) { group in
+                    weeklyCard(group, today: today)
+                }
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 340), spacing: ScribeDesign.Spacing.l)],
                     alignment: .leading,
                     spacing: ScribeDesign.Spacing.l
                 ) {
-                    ForEach(groups) { group in
-                        WeeklyBudgetCard(
-                            group: group,
-                            onConfirm: confirmOccurrence,
-                            onSkip: skipOccurrence,
-                            onTap: { selectedItem = $0.budgetItem },
-                            onAdjustAmount: adjustAmount,
-                            isCurrentWeek: group.startDate <= today && group.endDate >= today
-                        )
+                    ForEach(groups.filter { $0.endDate >= today }) { group in
+                        weeklyCard(group, today: today)
                     }
                 }
             }
         }
+    }
+
+    private func weeklyCard(_ group: DashboardViewModel.WeekGroup, today: Date) -> some View {
+        WeeklyBudgetCard(
+            group: group,
+            onConfirm: confirmOccurrence,
+            onSkip: skipOccurrence,
+            onTap: { selectedItem = $0.budgetItem },
+            onAdjustAmount: adjustAmount,
+            isCurrentWeek: group.startDate <= today && group.endDate >= today
+        )
     }
 
     private var emptyState: some View {
@@ -216,7 +224,14 @@ struct DashboardView: View {
 
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        guard let cutoffDate = calendar.date(byAdding: .day, value: -days, to: today) else { return }
+        guard let cutoffDate = viewModel.autoConfirmationCutoff(
+            lookbackDays: days,
+            budgetItems: activeItems,
+            sections: dashboardSections,
+            range: SettingsViewModel.currentDefaultRange(),
+            holidays: holidays,
+            now: today
+        ) else { return }
 
         // Pre-index existing occurrences by (budgetItemID, startOfDay) for O(1) lookup
         var existingOccurrenceKeys: Set<String> = []
@@ -229,10 +244,9 @@ struct DashboardView: View {
         var insertedIDs: [UUID] = []
 
         for item in activeItems where item.frequency != .irregular {
-            guard let scanStart = calendar.date(byAdding: .day, value: -30, to: cutoffDate) else { continue }
-            let dates = DateCalculator.occurrenceDates(for: item, in: scanStart...cutoffDate)
+            let dates = viewModel.autoConfirmationDates(for: item, before: cutoffDate, holidays: holidays)
 
-            for date in dates where date < cutoffDate {
+            for date in dates {
                 let dayKey = calendar.startOfDay(for: date)
                 let key = "\(item.id)_\(dayKey.timeIntervalSince1970)"
 
