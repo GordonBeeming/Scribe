@@ -7,6 +7,21 @@ enum ImportMode {
     case replace
 }
 
+/// What an import actually did. Merge silently leaves a row alone when the incoming
+/// `modifiedAt` isn't newer, so "it worked" and "it changed nothing" look identical
+/// without these counts.
+struct ImportSummary: Equatable {
+    var added = 0
+    var updated = 0
+    /// Present already, but the file wasn't newer, so the existing row was kept.
+    var skipped = 0
+    /// How many of the applied items arrived closed (`isActive == false`).
+    var closed = 0
+    var overrides = 0
+    var occurrences = 0
+    var members = 0
+}
+
 @MainActor
 enum DataManagementService {
 
@@ -99,7 +114,9 @@ enum DataManagementService {
 
     // MARK: - Import
 
-    static func importData(_ data: Data, into context: ModelContext, mode: ImportMode) throws {
+    @discardableResult
+    static func importData(_ data: Data, into context: ModelContext, mode: ImportMode) throws -> ImportSummary {
+        var summary = ImportSummary()
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let export = try decoder.decode(ScribeExport.self, from: data)
@@ -125,6 +142,7 @@ enum DataManagementService {
                 let member = codableMember.toModel()
                 context.insert(member)
                 memberMap[codableMember.id] = member
+                summary.members += 1
             }
             recordIDs.append(CKRecord.ID(recordName: codableMember.id.uuidString, zoneID: zoneID))
         }
@@ -136,6 +154,10 @@ enum DataManagementService {
                 if codableItem.modifiedAt > existing.modifiedAt {
                     updateBudgetItem(existing, from: codableItem)
                     existing.familyMembers = codableItem.familyMemberIDs.compactMap { memberMap[$0] }
+                    summary.updated += 1
+                    if !codableItem.isActive { summary.closed += 1 }
+                } else {
+                    summary.skipped += 1
                 }
                 itemMap[codableItem.id] = existing
             } else {
@@ -143,6 +165,8 @@ enum DataManagementService {
                 context.insert(item)
                 item.familyMembers = codableItem.familyMemberIDs.compactMap { memberMap[$0] }
                 itemMap[codableItem.id] = item
+                summary.added += 1
+                if !codableItem.isActive { summary.closed += 1 }
             }
             recordIDs.append(CKRecord.ID(recordName: codableItem.id.uuidString, zoneID: zoneID))
         }
@@ -160,6 +184,7 @@ enum DataManagementService {
                     if let parentID = codableOverride.budgetItemID {
                         existing.budgetItem = itemMap[parentID]
                     }
+                    summary.overrides += 1
                 }
             } else {
                 let override_ = codableOverride.toModel()
@@ -167,6 +192,7 @@ enum DataManagementService {
                 if let parentID = codableOverride.budgetItemID {
                     override_.budgetItem = itemMap[parentID]
                 }
+                summary.overrides += 1
             }
             recordIDs.append(CKRecord.ID(recordName: codableOverride.id.uuidString, zoneID: zoneID))
         }
@@ -185,6 +211,7 @@ enum DataManagementService {
                     if let parentID = codableOcc.budgetItemID {
                         existing.budgetItem = itemMap[parentID]
                     }
+                    summary.occurrences += 1
                 }
             } else {
                 let occurrence = codableOcc.toModel()
@@ -192,6 +219,7 @@ enum DataManagementService {
                 if let parentID = codableOcc.budgetItemID {
                     occurrence.budgetItem = itemMap[parentID]
                 }
+                summary.occurrences += 1
             }
             recordIDs.append(CKRecord.ID(recordName: codableOcc.id.uuidString, zoneID: zoneID))
         }
@@ -237,11 +265,15 @@ enum DataManagementService {
             recordIDs.append(CKRecord.ID(recordName: codablePrefs.id.uuidString, zoneID: zoneID))
         }
 
-        try? context.save()
+        // Not `try?`: a failed save here used to be swallowed and the caller still
+        // reported success, so an import that changed nothing looked like one that worked.
+        try context.save()
 
         if !recordIDs.isEmpty {
             SyncCoordinator.shared.pushChanges(for: recordIDs)
         }
+
+        return summary
     }
 
     // MARK: - Helpers

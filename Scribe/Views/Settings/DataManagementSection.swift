@@ -153,13 +153,39 @@ struct DataManagementSection: View {
     private func performImport(mode: ImportMode) {
         guard let data = importData else { return }
         do {
-            try DataManagementService.importData(data, into: modelContext, mode: mode)
-            successMessage = "Data imported successfully."
+            let summary = try DataManagementService.importData(data, into: modelContext, mode: mode)
+            successMessage = Self.message(for: summary)
             showSuccessAlert = true
         } catch {
             errorMessage = "Failed to import: \(error.localizedDescription)"
             showErrorAlert = true
         }
         importData = nil
+    }
+
+    /// Merge leaves a row alone when the file isn't newer, so "imported successfully" on its
+    /// own can't be told apart from "imported and changed nothing". Say what actually landed.
+    static func message(for summary: ImportSummary) -> String {
+        func count(_ n: Int, _ singular: String, _ plural: String) -> String {
+            "\(n) \(n == 1 ? singular : plural)"
+        }
+
+        var applied: [String] = []
+        if summary.added > 0 { applied.append("\(summary.added) added") }
+        if summary.updated > 0 { applied.append("\(summary.updated) updated") }
+
+        var lines = [applied.isEmpty ? "No items changed." : count(summary.added + summary.updated, "item", "items") + ": " + applied.joined(separator: ", ") + "."]
+        if summary.closed > 0 { lines.append("\(summary.closed) of them closed.") }
+        if summary.skipped > 0 {
+            lines.append(count(summary.skipped, "item was", "items were") + " left alone: the file wasn't newer.")
+        }
+
+        var extras: [String] = []
+        if summary.members > 0 { extras.append(count(summary.members, "family member", "family members")) }
+        if summary.overrides > 0 { extras.append(count(summary.overrides, "amount override", "amount overrides")) }
+        if summary.occurrences > 0 { extras.append(count(summary.occurrences, "occurrence", "occurrences")) }
+        if !extras.isEmpty { lines.append("Also " + extras.joined(separator: ", ") + ".") }
+
+        return lines.joined(separator: "\n")
     }
 }
