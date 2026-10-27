@@ -127,7 +127,7 @@ struct DashboardView: View {
                         }
                         ForEach(weeklySections) { section in
                             WeeklyInsightsCard(
-                                summary: viewModel.reconciliationSummary(groups: weeklyGroups(for: section)),
+                                summary: viewModel.reconciliationSummary(groups: weeklyGroups(for: section), history: occurrences, holidays: holidays),
                                 currencyCode: ExchangeRateCache.shared.baseCurrency,
                                 sectionLabel: weeklySections.count > 1 ? section.label : nil
                             )
@@ -145,6 +145,13 @@ struct DashboardView: View {
                 VStack(spacing: ScribeDesign.Spacing.xxl) {
                     ForEach(enabledSections) { section in
                         sectionView(section, availableWidth: contentWidth)
+                        if section.sectionType == .detailedWeekly {
+                            WeeklyInsightsCard(
+                                summary: viewModel.reconciliationSummary(groups: weeklyGroups(for: section), history: occurrences, holidays: holidays),
+                                currencyCode: ExchangeRateCache.shared.baseCurrency,
+                                sectionLabel: section.label
+                            )
+                        }
                     }
                 }
             }

@@ -8,11 +8,7 @@ struct ScribeApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     static var usesUITestFixture: Bool {
-        #if DEBUG
-        ProcessInfo.processInfo.arguments.contains("--ui-testing")
-        #else
-        false
-        #endif
+        AppRuntime.usesUITestFixture
     }
 
     private let modelContainer = Self.makeModelContainer()

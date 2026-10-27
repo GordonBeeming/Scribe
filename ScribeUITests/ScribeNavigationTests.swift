@@ -48,20 +48,20 @@ final class ScribeNavigationTests: XCTestCase {
         attachScreenshot("Dashboard navigation")
     }
 
-    func testPaymentUpdatesWideInsights() throws {
+    func testPaymentUpdatesInsights() {
         openTab("Dashboard")
         let reviewed = app.staticTexts["dashboard.reviewed-count"]
-        guard reviewed.waitForExistence(timeout: 5) else {
-            throw XCTSkip("Weekly insights require a wide display. Open Duo or use iPad to exercise this test.")
-        }
+        XCTAssertTrue(reviewed.waitForExistence(timeout: 10), "Weekly check-in must remain available in every layout")
         let remaining = app.staticTexts["dashboard.remaining"]
         let initialReviewed = reviewed.label
         let initialAmount = remaining.label
-        let confirm = app.buttons.matching(NSPredicate(format: "label == %@", "Mark as paid")).firstMatch
+        let confirm = app.buttons.matching(NSPredicate(format: "label == %@ AND value == %@", "Mark as paid", "pending")).firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        let paymentID = confirm.identifier
         confirm.tap()
-        let undo = app.buttons.matching(NSPredicate(format: "label == %@", "Undo paid")).firstMatch
+        let undo = app.buttons[paymentID]
         XCTAssertTrue(undo.waitForExistence(timeout: 10))
+        XCTAssertEqual(undo.label, "Undo paid")
         let reviewedChanged = NSPredicate(format: "label != %@", initialReviewed)
         expectation(for: reviewedChanged, evaluatedWith: reviewed)
         waitForExpectations(timeout: 10)

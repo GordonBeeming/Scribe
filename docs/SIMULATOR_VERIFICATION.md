@@ -59,14 +59,17 @@ xcodebuild test \
 ```
 
 `ScribeUITests` launches the DEBUG-only `--ui-testing` fixture in an in-memory
-store, with CloudKit sync and dashboard network loading disabled. The tests
+store and a separate settings suite, with CloudKit sync and dashboard network
+loading disabled. The test settings reset on each fixture launch. The tests
 assert the fixture marker before interacting, so a release build fails safely.
 They cover tab navigation, typing and cancelling an item form, and a payment's
 effect on remaining expenses and reconciliation progress, followed by undo.
 They also check that an expanded previous week remains expanded when rotation
 requests change the layout. Orientation is restored in test teardown.
-The payment/insight test explicitly skips when the active display is too narrow
-to show the insight column. Run it on the open Duo or iPad for that coverage.
+The payment/insight test fails if the check-in is missing on a wide display.
+It selects a pending expense and tracks the same occurrence through undo;
+skipped expenses cannot satisfy that selector. Run it on the open Duo or iPad
+for wide-layout coverage.
 Screenshots are attached to the `.xcresult` bundle.
 Run UI-test invocations serially on the Mac. The screenshot-capture case is
 disabled by default and enabled only by the explicit capture helper below.

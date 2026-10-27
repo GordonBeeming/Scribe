@@ -37,6 +37,7 @@ def capture_frames(args):
     if args.derived_data is None:
         key = hashlib.sha256(str(repo).encode()).hexdigest()[:10]
         args.derived_data = Path(tempfile.gettempdir()) / f"scribe-simulator-{key}"
+    args.derived_data = args.derived_data.expanduser().resolve()
     run = Path(tempfile.mkdtemp(prefix="scribe-store-"))
     frames = run / "frames"
     frames.mkdir()

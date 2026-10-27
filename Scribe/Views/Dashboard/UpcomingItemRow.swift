@@ -86,6 +86,8 @@ struct UpcomingItemRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(confirmAccessibilityLabel)
+            .accessibilityIdentifier("payment.\(item.budgetItem.id).\(item.occurrenceDate.timeIntervalSince1970)")
+            .accessibilityValue(item.isConfirmed ? "confirmed" : (item.isSkipped ? "skipped" : "pending"))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.budgetItem.name)

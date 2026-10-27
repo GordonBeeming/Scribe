@@ -119,11 +119,21 @@ final class DashboardViewModel {
         let overdueCount: Int
     }
 
-    func reconciliationSummary(groups: [WeekGroup], now: Date = Date()) -> ReconciliationSummary {
+    func reconciliationSummary(groups: [WeekGroup], history: [Occurrence] = [], holidays: Set<Date> = [], now: Date = Date()) -> ReconciliationSummary {
         let today = Calendar.current.startOfDay(for: now)
         let current = groups.first { $0.startDate <= today && $0.endDate >= today }
         let reviewed = current?.items.filter { $0.isConfirmed || $0.isSkipped }.count ?? 0
-        let overdue = groups.flatMap(\.items).filter {
+        let displayedItems = groups.flatMap(\.items)
+        let displayedOccurrenceIDs = Set(displayedItems.compactMap { $0.occurrence?.id })
+        let firstDisplayedDay = groups.map(\.startDate).min() ?? today
+        let olderPending = history.filter { occurrence in
+            guard !displayedOccurrenceIDs.contains(occurrence.id),
+                  occurrence.status != .confirmed, occurrence.status != .skipped,
+                  let item = occurrence.budgetItem, item.isActive else { return false }
+            let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: occurrence.dueDate, holidays: holidays)
+            return displayDate < min(today, firstDisplayedDay)
+        }.count
+        let overdue = olderPending + displayedItems.filter {
             $0.dueDate < today && !$0.isConfirmed && !$0.isSkipped
         }.count
         return ReconciliationSummary(

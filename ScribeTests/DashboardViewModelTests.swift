@@ -439,11 +439,13 @@ struct DashboardViewModelTests {
             exchangeRates: ["USD": 1, "AUD": 1.5], baseCurrency: "AUD",
             includingPreviousWeek: true, now: today
         )
-        let summary = viewModel.reconciliationSummary(groups: groups, now: today)
+        let olderPending = Occurrence(dueDate: makeDate(year: 2026, month: 9, day: 28),
+                                      expectedAmount: 50, status: .overdue, budgetItem: audExpense)
+        let summary = viewModel.reconciliationSummary(groups: groups, history: saved + [olderPending], now: today)
         #expect(summary.remainingExpenses == 150)
         #expect(summary.reviewedCount == 2)
         #expect(summary.totalCount == 3)
-        #expect(summary.overdueCount == 2)
+        #expect(summary.overdueCount == 3)
         #expect(summary.weekLabel == groups[1].label)
     }
 
