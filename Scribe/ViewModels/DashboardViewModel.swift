@@ -111,6 +111,30 @@ final class DashboardViewModel {
         var delta: Decimal { totalIncome - totalExpenses }
     }
 
+    struct ReconciliationSummary {
+        let weekLabel: String
+        let remainingExpenses: Decimal
+        let reviewedCount: Int
+        let totalCount: Int
+        let overdueCount: Int
+    }
+
+    func reconciliationSummary(groups: [WeekGroup], now: Date = Date()) -> ReconciliationSummary {
+        let today = Calendar.current.startOfDay(for: now)
+        let current = groups.first { $0.startDate <= today && $0.endDate >= today }
+        let reviewed = current?.items.filter { $0.isConfirmed || $0.isSkipped }.count ?? 0
+        let overdue = groups.flatMap(\.items).filter {
+            $0.dueDate < today && !$0.isConfirmed && !$0.isSkipped
+        }.count
+        return ReconciliationSummary(
+            weekLabel: current?.label ?? "This week",
+            remainingExpenses: current?.pendingExpenses ?? 0,
+            reviewedCount: reviewed,
+            totalCount: current?.totalCount ?? 0,
+            overdueCount: overdue
+        )
+    }
+
     struct MonthlySummary: Identifiable {
         let id: UUID
         let label: String

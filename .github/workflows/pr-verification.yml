@@ -6,6 +6,7 @@ on:
     paths:
       - 'Scribe/**'
       - 'ScribeTests/**'
+      - 'ScribeUITests/**'
       - 'ScribeWidget/**'
       - 'ScribeWatch/**'
       - 'ScribeWatchWidget/**'
@@ -20,14 +21,14 @@ concurrency:
 jobs:
   build-and-test:
     name: Build and Test
-    runs-on: macos-latest
+    runs-on: xcode-27
 
     steps:
       - name: Checkout code
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
-      - name: Select Xcode 26.2
-        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+      - name: Select Xcode 27.1
+        run: sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
 
       - name: Show Xcode and SDK version
         run: |
@@ -49,7 +50,7 @@ jobs:
             -quiet \
             -skipPackagePluginValidation \
             DEVELOPMENT_TEAM="" \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO
 
       - name: Run unit tests (iPhone)
@@ -57,7 +58,7 @@ jobs:
           xcodebuild test-without-building \
             -project Scribe.xcodeproj \
             -scheme Scribe \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
             -only-testing:ScribeTests \
             -quiet
 
@@ -66,8 +67,28 @@ jobs:
           xcodebuild test-without-building \
             -project Scribe.xcodeproj \
             -scheme Scribe \
-            -destination 'platform=iOS Simulator,name=iPad Air 13-inch (M4)' \
+            -destination 'platform=iOS Simulator,name=iPad Air 13-inch (M4),OS=27.0' \
             -only-testing:ScribeTests \
+            -quiet
+
+      - name: Run unit tests (iPhone Duo)
+        run: |
+          xcodebuild test-without-building \
+            -project Scribe.xcodeproj \
+            -scheme Scribe \
+            -destination 'platform=iOS Simulator,name=iPhone Duo,OS=27.1' \
+            -only-testing:ScribeTests \
+            -quiet
+
+      - name: Verify navigation/forms and wide iPad insights
+        run: |
+          xcodebuild test-without-building \
+            -project Scribe.xcodeproj \
+            -scheme Scribe \
+            -destination 'platform=iOS Simulator,name=iPad Air 13-inch (M4),OS=27.0' \
+            -destination 'platform=iOS Simulator,name=iPhone Duo,OS=27.1' \
+            -only-testing:ScribeUITests \
+            -parallel-testing-enabled NO \
             -quiet
 
       - name: Archive test results

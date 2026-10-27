@@ -10,7 +10,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         // Only register for remote notifications if not in a test environment
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil && !ScribeApp.usesUITestFixture {
             application.registerForRemoteNotifications()
         }
         return true

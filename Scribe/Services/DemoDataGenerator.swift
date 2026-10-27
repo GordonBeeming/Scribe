@@ -4,7 +4,7 @@ import CloudKit
 
 @MainActor
 enum DemoDataGenerator {
-    static func generate(in context: ModelContext) {
+    static func generate(in context: ModelContext, syncToCloud: Bool = true) {
         // Clear all existing data first to avoid duplicates
         DataManagementService.clearAllData(in: context)
 
@@ -322,6 +322,8 @@ enum DemoDataGenerator {
         context.insert(weeklySection)
 
         try? context.save()
+
+        guard syncToCloud else { return }
 
         // MARK: - Push to CloudKit
 

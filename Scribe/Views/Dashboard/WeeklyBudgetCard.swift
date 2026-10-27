@@ -7,10 +7,9 @@ struct WeeklyBudgetCard: View {
     var onTap: ((DashboardViewModel.UpcomingItem) -> Void)?
     var onAdjustAmount: ((DashboardViewModel.UpcomingItem, Decimal) -> Void)?
     var isCurrentWeek: Bool = false
+    var currencyCode: String = "AUD"
 
-    @State private var expandedOverride: Bool?
-
-    private var isExpanded: Bool { expandedOverride ?? isCurrentWeek }
+    @Binding var isExpanded: Bool
 
     private var net: Decimal { group.rollingNet ?? group.delta }
     private var netLabel: String { group.rollingNet != nil ? "Net (rolling)" : "Net" }
@@ -40,7 +39,7 @@ struct WeeklyBudgetCard: View {
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(ScribeTheme.primaryText)
                         Spacer()
-                        Text(CurrencyFormatter.format(group.pendingExpenses, currencyCode: "AUD", signStyle: .none))
+                        Text(CurrencyFormatter.format(group.pendingExpenses, currencyCode: currencyCode, signStyle: .none))
                             .font(ScribeDesign.Font.money)
                             .foregroundStyle(ScribeTheme.primaryText)
                     }
@@ -59,7 +58,7 @@ struct WeeklyBudgetCard: View {
 
     private var header: some View {
         Button {
-            withAnimation(.snappy) { expandedOverride = !isExpanded }
+            withAnimation(.snappy) { isExpanded.toggle() }
         } label: {
             VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
                 HStack(spacing: ScribeDesign.Spacing.s) {
@@ -94,6 +93,7 @@ struct WeeklyBudgetCard: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(group.endDate < Calendar.current.startOfDay(for: Date()) ? "week.past" : "week.upcoming")
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
 
@@ -105,7 +105,7 @@ struct WeeklyBudgetCard: View {
                 .lineLimit(1)
             MoneyText(
                 amount: amount,
-                currencyCode: "AUD",
+                currencyCode: currencyCode,
                 type: type,
                 sign: type == nil ? .signed : .unsigned,
                 emphasis: .money

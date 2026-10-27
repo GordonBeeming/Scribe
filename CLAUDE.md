@@ -4,7 +4,7 @@ Family budget app for iPhone, iPad, and Apple Watch. SwiftUI + SwiftData, with C
 
 ## Targets — all the moving parts
 
-XcodeGen generates `Scribe.xcodeproj` (gitignored) from `project.yml`. Run `xcodegen generate` after adding or removing files. There are four targets, and they share code by pulling the same source folders into each target:
+XcodeGen generates `Scribe.xcodeproj` (gitignored) from `project.yml`. Run `xcodegen generate` after adding or removing files. There are four product targets plus unit and native UI test targets. The products share code by pulling the same source folders into each target:
 
 | Target | Platform | Bundle id | What it is |
 | --- | --- | --- | --- |
@@ -21,7 +21,7 @@ All targets read the same SwiftData store from the app group `group.com.gordonbe
 
 This is the easy thing to miss. When you change anything visual — palette, money colours, card style, a screen layout — check whether it should also land on:
 
-- **iPhone** (compact) and **iPad** (regular size class — `ContentView` uses `.tabViewStyle(.sidebarAdaptable)` and the dashboard uses an adaptive grid).
+- **iPhone**, **iPhone Duo**, and **iPad** — `ContentView` uses `.tabViewStyle(.tabBarOnly)`. The system chooses compact tabs or an icon rail. Wide dashboards place the monthly overview and weekly check-in beside weekly payments; narrow and accessibility layouts stack the sections.
 - **Apple Watch** — `ScribeWatch/BudgetSummaryView.swift`, styled via `ScribeWatch/WatchTheme.swift`. Keep `WatchTheme` in sync with `ScribeTheme` / the asset-catalog colours by hand, since the watch can't import the iOS design system.
 - **Both widgets** — `ScribeWidget/` (iOS) and `ScribeWatchWidget/`.
 
@@ -43,11 +43,11 @@ Lives in `Scribe/Views/DesignSystem/` — `ScribeBackground` (the brand-tinted g
 
 Test every UI change in the simulator before calling it done. A green build and passing unit tests aren't enough on their own. Build, launch, and screenshot the affected screen to confirm it renders and behaves. Skip only when I say so, or the change has no visual surface (pure model/sync/test-only edits).
 
-XcodeBuildMCP drives the simulators, and **tap/snapshot UI automation works** (`snapshot_ui`, `tap`, `gesture`, `set_sim_appearance`). One gotcha: if several simulators share a name (e.g. "Apple Watch Series 11 (46mm)" across watchOS versions), the MCP can target the wrong one. Rename the one you want (`xcrun simctl rename <udid> <unique-name>`) so it resolves cleanly, then rename it back. The iPad `sidebarAdaptable` sidebar rows aren't exposed to automation, so switching tabs in landscape needs a manual tap.
+Use the repo-local [scribe-simulator skill](.agents/skills/scribe-simulator/SKILL.md) and [simulator guide](docs/SIMULATOR_VERIFICATION.md). Native XCUITest drives interaction, and the pinned MobileBuildMCP CLI inspects the UI. On the Duo inner display, CLI taps can report success without changing the UI. Assert the resulting screen with native tests. Device Hub still selects the fold pose manually.
 
 Per-surface flow:
 
-- **iPhone / iPad:** `iPhone 17 Pro` (or `iPad Pro 13-inch (M5)`). `build_run_sim` → `screenshot` → read it back. Check light and dark (`set_sim_appearance`). For state behind a setting, flip the app-group pref and relaunch: `xcrun simctl spawn <udid> defaults write group.com.gordonbeeming.scribe <key> -bool YES`.
+- **iPhone / iPad / Duo:** follow the guide to build, run native UI tests, capture the active framebuffer, and inspect it. Check light and dark with `simctl ui`. For state behind a setting, flip the app-group pref and relaunch: `xcrun simctl spawn <udid> defaults write group.com.gordonbeeming.scribe <key> -bool YES`.
 - **Watch:** build the `ScribeWatch` scheme for a watchOS 26 sim (`xcodebuild build -scheme ScribeWatch -destination 'platform=watchOS Simulator,id=<udid>'`), install + launch via `simctl`, and tap the DEBUG **Load Demo Data** button to populate the empty store.
 
 Demo data: `DemoDataGenerator.generate(in:)`, reachable from Settings → Data Management on iOS and the Load Demo Data button on the watch.
@@ -61,3 +61,5 @@ Captured with `xcrun simctl io <udid> screenshot` (native resolution, not the do
 - **iPhone 6.5"/6.7":** 1284×2778 — iPhone 13 Pro Max profile (App Store Connect rejected 6.9" / 1320×2868 for this listing).
 - **iPad 13" landscape:** 2752×2064 — iPad Pro 13-inch (M5).
 - **Watch:** 416×496 — Apple Watch Series 11 (46mm).
+
+- **Duo:** outer 1398×2034 portrait; inner 2853×2007 landscape. Use the guide’s native capture helper for Dashboard, Items, and detail screenshots.

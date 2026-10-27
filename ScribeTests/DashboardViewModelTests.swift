@@ -415,6 +415,47 @@ struct DashboardViewModelTests {
         #expect(legacy.actualAmount == 900)
     }
 
+    @Test("Weekly insights separate current expenses, reviewed payments and earlier unchecked items")
+    func weeklyReconciliationInsights() throws {
+        let reference = makeDate(year: 2026, month: 10, day: 5)
+        let currentDate = makeDate(year: 2026, month: 10, day: 12)
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let usdExpense = BudgetItem(name: "Subscription", type: .expense, amount: 100, currencyCode: "USD",
+                                    frequency: .weekly, referenceDate: reference, category: .other)
+        let audExpense = BudgetItem(name: "Groceries", type: .expense, amount: 50,
+                                    frequency: .weekly, referenceDate: reference, category: .other)
+        let income = BudgetItem(name: "Salary", type: .income, amount: 1000,
+                                frequency: .weekly, referenceDate: reference, category: .income)
+        let saved = [
+            Occurrence(dueDate: reference, expectedAmount: 100, status: .confirmed, budgetItem: usdExpense),
+            Occurrence(dueDate: reference, expectedAmount: 50, status: .skipped, budgetItem: audExpense),
+            Occurrence(dueDate: currentDate, expectedAmount: 50, actualAmount: 45,
+                       status: .confirmed, budgetItem: audExpense),
+            Occurrence(dueDate: currentDate, expectedAmount: 1000, status: .skipped, budgetItem: income)
+        ]
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [usdExpense, audExpense, income], occurrences: saved,
+            anchor: .fixedDay(weekday: 2), range: .days14, holidays: [],
+            exchangeRates: ["USD": 1, "AUD": 1.5], baseCurrency: "AUD",
+            includingPreviousWeek: true, now: today
+        )
+        let summary = viewModel.reconciliationSummary(groups: groups, now: today)
+        #expect(summary.remainingExpenses == 150)
+        #expect(summary.reviewedCount == 2)
+        #expect(summary.totalCount == 3)
+        #expect(summary.overdueCount == 2)
+        #expect(summary.weekLabel == groups[1].label)
+    }
+
+    @Test("Weekly insights handle an empty schedule")
+    func emptyWeeklyReconciliationInsights() {
+        let summary = viewModel.reconciliationSummary(groups: [])
+        #expect(summary.remainingExpenses == 0)
+        #expect(summary.reviewedCount == 0)
+        #expect(summary.totalCount == 0)
+        #expect(summary.overdueCount == 0)
+    }
+
     // MARK: - effectiveBalanceAmount Tests
 
     @Test("Pending item uses projected amount")

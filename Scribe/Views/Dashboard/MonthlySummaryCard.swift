@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MonthlySummaryCard: View {
     let summary: DashboardViewModel.MonthlySummary
+    var currencyCode: String = "AUD"
 
     var body: some View {
         SummaryHeroCard(
@@ -9,7 +10,8 @@ struct MonthlySummaryCard: View {
             systemImage: "calendar",
             income: summary.totalIncome,
             expenses: summary.totalExpenses,
-            net: summary.delta
+            net: summary.delta,
+            currencyCode: currencyCode
         )
     }
 }

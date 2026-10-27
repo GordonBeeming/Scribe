@@ -6,6 +6,8 @@ private let dashboardLogger = Logger(subsystem: "com.gordonbeeming.scribe", cate
 
 struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query(filter: #Predicate<BudgetItem> { $0.isActive }) private var activeItems: [BudgetItem]
     @Query private var allItems: [BudgetItem]
     @Query private var occurrences: [Occurrence]
@@ -15,6 +17,27 @@ struct DashboardView: View {
     @State private var selectedItem: BudgetItem?
     @State private var irregularConfirmItem: DashboardViewModel.UpcomingItem?
     @State private var holidays: Set<Date> = []
+    @State private var contentWidth: CGFloat?
+    @State private var expandedWeeks: [WeekKey: Bool] = [:]
+
+    private struct WeekKey: Hashable {
+        let sectionID: UUID
+        let startDate: Date
+    }
+
+    private var maximumContentWidth: CGFloat {
+        let hasWeeklySection = dashboardSections.contains { $0.isEnabled && $0.sectionType == .detailedWeekly }
+        return hasWeeklySection && !dynamicTypeSize.isAccessibilitySize ? 1120 : 760
+    }
+
+    private func weeklyColumns(for availableWidth: CGFloat?) -> [GridItem] {
+        guard let contentWidth = availableWidth else {
+            return [GridItem(.flexible(minimum: 0), spacing: ScribeDesign.Spacing.l)]
+        }
+        let width = min(contentWidth, maximumContentWidth)
+        let minimum = dynamicTypeSize.isAccessibilitySize ? width : min(340, width)
+        return [GridItem(.adaptive(minimum: minimum), spacing: ScribeDesign.Spacing.l)]
+    }
 
     private var lookbackDays: Int {
         SettingsViewModel.currentLookbackDays()
@@ -27,6 +50,7 @@ struct DashboardView: View {
     }
 
     var body: some View {
+        let widthLimit = maximumContentWidth
         NavigationStack {
             ScrollView {
                 Group {
@@ -36,18 +60,25 @@ struct DashboardView: View {
                         dashboardContent
                     }
                 }
-                .frame(maxWidth: 760)
-                .frame(maxWidth: .infinity)
-                .padding()
+                .frame(maxWidth: widthLimit)
+                .frame(minWidth: 0, maxWidth: .infinity)
+                .padding(ScribeDesign.Spacing.l)
+                .onGeometryChange(for: CGFloat.self) { geometry in
+                    min(widthLimit, max(1, geometry.size.width - ScribeDesign.Spacing.l * 2))
+                } action: { width in
+                    contentWidth = width
+                }
             }
             .scribeScreen()
             .task {
+                guard !ScribeApp.usesUITestFixture else { return }
                 dashboardLogger.info("DashboardView appeared: \(dashboardSections.count) sections, \(dashboardSections.filter(\.isEnabled).count) enabled")
                 await loadHolidays()
                 await ExchangeRateCache.shared.load()
                 autoConfirmOldItems()
             }
             .navigationTitle("Scribe")
+            .navigationBarTitleDisplayMode(horizontalSizeClass == .regular ? .inline : .large)
             .sheet(item: $selectedItem) { item in
                 NavigationStack {
                     BudgetItemDetailView(item: item)
@@ -83,10 +114,37 @@ struct DashboardView: View {
                         onAdjustAmount: adjustAmount
                     )
                 }
+            } else if let width = contentWidth, width >= 620, !dynamicTypeSize.isAccessibilitySize,
+                      enabledSections.contains(where: { $0.sectionType == .detailedWeekly }) {
+                let weeklySections = enabledSections.filter { $0.sectionType == .detailedWeekly }
+                let overviewWidth = min(300, max(240, width * 0.34))
+                let paymentWidth = width - overviewWidth - ScribeDesign.Spacing.xl
+                HStack(alignment: .top, spacing: ScribeDesign.Spacing.xl) {
+                    VStack(alignment: .leading, spacing: ScribeDesign.Spacing.l) {
+                        ScribeSectionHeader("Overview", systemImage: "chart.bar")
+                        ForEach(enabledSections.filter { $0.sectionType == .monthlySummary }) { section in
+                            sectionView(section, availableWidth: overviewWidth)
+                        }
+                        ForEach(weeklySections) { section in
+                            WeeklyInsightsCard(
+                                summary: viewModel.reconciliationSummary(groups: weeklyGroups(for: section)),
+                                currencyCode: ExchangeRateCache.shared.baseCurrency,
+                                sectionLabel: weeklySections.count > 1 ? section.label : nil
+                            )
+                        }
+                    }
+                    .frame(width: overviewWidth)
+                    VStack(alignment: .leading, spacing: ScribeDesign.Spacing.xxl) {
+                        ForEach(enabledSections.filter { $0.sectionType == .detailedWeekly }) { section in
+                            sectionView(section, availableWidth: paymentWidth)
+                        }
+                    }
+                    .frame(minWidth: 0, maxWidth: .infinity)
+                }
             } else {
                 VStack(spacing: ScribeDesign.Spacing.xxl) {
                     ForEach(enabledSections) { section in
-                        sectionView(section)
+                        sectionView(section, availableWidth: contentWidth)
                     }
                 }
             }
@@ -94,7 +152,7 @@ struct DashboardView: View {
     }
 
     @ViewBuilder
-    private func sectionView(_ section: DashboardSection) -> some View {
+    private func sectionView(_ section: DashboardSection, availableWidth: CGFloat?) -> some View {
         switch section.sectionType {
         case .monthlySummary:
             MonthlySummaryCard(
@@ -105,48 +163,60 @@ struct DashboardView: View {
                     holidays: holidays,
                     exchangeRates: ExchangeRateCache.shared.rates,
                     baseCurrency: ExchangeRateCache.shared.baseCurrency
-                )
+                ),
+                currencyCode: ExchangeRateCache.shared.baseCurrency
             )
         case .detailedWeekly:
-            let groups = viewModel.weeklyGroups(
-                budgetItems: activeItems,
-                occurrences: occurrences,
-                anchor: section.anchor,
-                range: SettingsViewModel.currentDefaultRange(),
-                holidays: holidays,
-                exchangeRates: ExchangeRateCache.shared.rates,
-                baseCurrency: ExchangeRateCache.shared.baseCurrency,
-                rollingNet: SettingsViewModel.currentRollingWeeklyNet(),
-                includingPreviousWeek: true
-            )
+            let groups = weeklyGroups(for: section)
             let calendar = Calendar.current
             let today = calendar.startOfDay(for: Date())
             VStack(alignment: .leading, spacing: ScribeDesign.Spacing.m) {
                 ScribeSectionHeader(section.label, systemImage: "calendar.day.timeline.left")
                 ForEach(groups.filter { $0.endDate < today }) { group in
-                    weeklyCard(group, today: today)
+                    weeklyCard(group, today: today, sectionID: section.id)
                 }
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 340), spacing: ScribeDesign.Spacing.l)],
+                    columns: weeklyColumns(for: availableWidth),
                     alignment: .leading,
                     spacing: ScribeDesign.Spacing.l
                 ) {
                     ForEach(groups.filter { $0.endDate >= today }) { group in
-                        weeklyCard(group, today: today)
+                        weeklyCard(group, today: today, sectionID: section.id)
                     }
                 }
             }
         }
     }
 
-    private func weeklyCard(_ group: DashboardViewModel.WeekGroup, today: Date) -> some View {
-        WeeklyBudgetCard(
+    private func weeklyGroups(for section: DashboardSection) -> [DashboardViewModel.WeekGroup] {
+        viewModel.weeklyGroups(
+            budgetItems: activeItems,
+            occurrences: occurrences,
+            anchor: section.anchor,
+            range: SettingsViewModel.currentDefaultRange(),
+            holidays: holidays,
+            exchangeRates: ExchangeRateCache.shared.rates,
+            baseCurrency: ExchangeRateCache.shared.baseCurrency,
+            rollingNet: SettingsViewModel.currentRollingWeeklyNet(),
+            includingPreviousWeek: true
+        )
+    }
+
+    private func weeklyCard(_ group: DashboardViewModel.WeekGroup, today: Date, sectionID: UUID) -> some View {
+        let key = WeekKey(sectionID: sectionID, startDate: group.startDate)
+        let isCurrentWeek = group.startDate <= today && group.endDate >= today
+        return WeeklyBudgetCard(
             group: group,
             onConfirm: confirmOccurrence,
             onSkip: skipOccurrence,
             onTap: { selectedItem = $0.budgetItem },
             onAdjustAmount: adjustAmount,
-            isCurrentWeek: group.startDate <= today && group.endDate >= today
+            isCurrentWeek: isCurrentWeek,
+            currencyCode: ExchangeRateCache.shared.baseCurrency,
+            isExpanded: Binding(
+                get: { expandedWeeks[key] ?? isCurrentWeek },
+                set: { expandedWeeks[key] = $0 }
+            )
         )
     }
 
