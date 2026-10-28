@@ -449,6 +449,29 @@ struct DashboardViewModelTests {
         #expect(summary.weekLabel == groups[1].label)
     }
 
+    @Test("Weekly progress retains reviewed irregular payments after rescheduling")
+    func reviewedIrregularPaymentHistory() {
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let paidDate = makeDate(year: 2026, month: 10, day: 13)
+        let expense = BudgetItem(name: "Irregular bill", type: .expense, amount: 100,
+                                 frequency: .irregular, referenceDate: makeDate(year: 2026, month: 11, day: 2),
+                                 category: .other)
+        let confirmed = Occurrence(dueDate: paidDate, expectedAmount: 100, status: .confirmed, budgetItem: expense)
+        let skipped = Occurrence(dueDate: makeDate(year: 2026, month: 10, day: 14),
+                                 expectedAmount: 100, status: .skipped, budgetItem: expense)
+        let previous = Occurrence(dueDate: makeDate(year: 2026, month: 10, day: 6),
+                                  expectedAmount: 100, status: .confirmed, budgetItem: expense)
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [expense], occurrences: [confirmed, skipped, previous],
+            anchor: .fixedDay(weekday: 2), range: .days14, holidays: [],
+            includingPreviousWeek: true, now: today
+        )
+        let summary = viewModel.reconciliationSummary(groups: groups, history: [confirmed, skipped, previous], now: today)
+        #expect(summary.reviewedCount == 2)
+        #expect(summary.totalCount == 2)
+        #expect(summary.remainingExpenses == 0)
+    }
+
     @Test("Weekly insights handle an empty schedule")
     func emptyWeeklyReconciliationInsights() {
         let summary = viewModel.reconciliationSummary(groups: [])

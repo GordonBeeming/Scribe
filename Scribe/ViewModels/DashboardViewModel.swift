@@ -125,6 +125,13 @@ final class DashboardViewModel {
         let reviewed = current?.items.filter { $0.isConfirmed || $0.isSkipped }.count ?? 0
         let displayedItems = groups.flatMap(\.items)
         let displayedOccurrenceIDs = Set(displayedItems.compactMap { $0.occurrence?.id })
+        let additionalReviewed = history.filter { occurrence in
+            guard let current, !displayedOccurrenceIDs.contains(occurrence.id),
+                  occurrence.status == .confirmed || occurrence.status == .skipped,
+                  let item = occurrence.budgetItem, item.isActive else { return false }
+            let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: occurrence.dueDate, holidays: holidays)
+            return displayDate >= current.startDate && displayDate <= current.endDate
+        }.count
         let firstDisplayedDay = groups.map(\.startDate).min() ?? today
         let olderPending = history.filter { occurrence in
             guard !displayedOccurrenceIDs.contains(occurrence.id),
@@ -139,8 +146,8 @@ final class DashboardViewModel {
         return ReconciliationSummary(
             weekLabel: current?.label ?? "This week",
             remainingExpenses: current?.pendingExpenses ?? 0,
-            reviewedCount: reviewed,
-            totalCount: current?.totalCount ?? 0,
+            reviewedCount: reviewed + additionalReviewed,
+            totalCount: (current?.totalCount ?? 0) + additionalReviewed,
             overdueCount: overdue
         )
     }
