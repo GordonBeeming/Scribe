@@ -4,8 +4,12 @@ import XCTest
 final class ScribeNavigationTests: XCTestCase {
     private let app = XCUIApplication()
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        if name.contains("testCaptureAppStoreScreenshots") {
+            try XCTSkipUnless(ProcessInfo.processInfo.environment["SCRIBE_CAPTURE_STORE_SCREENSHOTS"] == "1",
+                              "Enable the explicit App Store screenshot capture run")
+        }
         continueAfterFailure = false
         app.launchArguments = ["--ui-testing"]
         app.launch()

@@ -72,7 +72,9 @@ skipped expenses cannot satisfy that selector. Run it on the open Duo or iPad
 for wide-layout coverage.
 Screenshots are attached to the `.xcresult` bundle.
 Run UI-test invocations serially on the Mac. The screenshot-capture case is
-disabled by default and enabled only by the explicit capture helper below.
+excluded from CI and skips before app launch by default. It is enabled only
+by the explicit capture helper below. CI also limits execution to one simulator
+destination at a time; disabling parallel tests alone does not serialize destinations.
 
 ### Direct inspection and targeted actions
 

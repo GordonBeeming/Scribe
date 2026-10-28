@@ -63,6 +63,7 @@ jobs:
             -scheme Scribe \
             -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
             -only-testing:ScribeTests \
+            -parallel-testing-enabled NO \
             -quiet
 
       - name: Run unit tests (iPad)
@@ -72,6 +73,7 @@ jobs:
             -scheme Scribe \
             -destination 'platform=iOS Simulator,name=iPad Air 13-inch (M4),OS=27.0' \
             -only-testing:ScribeTests \
+            -parallel-testing-enabled NO \
             -quiet
 
       - name: Run unit tests (iPhone Duo)
@@ -81,6 +83,7 @@ jobs:
             -scheme Scribe \
             -destination 'platform=iOS Simulator,name=iPhone Duo,OS=27.1' \
             -only-testing:ScribeTests \
+            -parallel-testing-enabled NO \
             -quiet
 
       - name: Verify navigation/forms and wide iPad insights
@@ -91,6 +94,8 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPad Air 13-inch (M4),OS=27.0' \
             -destination 'platform=iOS Simulator,name=iPhone Duo,OS=27.1' \
             -only-testing:ScribeUITests \
+            -skip-testing:ScribeUITests/ScribeNavigationTests/testCaptureAppStoreScreenshots \
+            -maximum-concurrent-test-simulator-destinations 1 \
             -parallel-testing-enabled NO \
             -quiet
 
