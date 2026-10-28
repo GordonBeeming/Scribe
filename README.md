@@ -26,7 +26,7 @@ A family budget management app for iOS, iPadOS, and watchOS built with SwiftUI a
 
 - iOS / iPadOS 26.0+
 - watchOS 26.0+
-- Xcode 26.2+
+- Xcode 27.1+
 - Swift 6
 
 ## Getting Started
@@ -43,6 +43,11 @@ xcodegen generate
 # Open in Xcode
 open Scribe.xcodeproj
 ```
+
+## Simulator verification
+
+Use the repo-local `scribe-simulator` skill and [simulator guide](docs/SIMULATOR_VERIFICATION.md)
+for native UI tests, direct simulator inspection, and Duo screenshots without desktop Computer Use.
 
 ## Architecture
 

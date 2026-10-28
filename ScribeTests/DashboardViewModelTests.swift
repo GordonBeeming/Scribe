@@ -415,6 +415,86 @@ struct DashboardViewModelTests {
         #expect(legacy.actualAmount == 900)
     }
 
+    @Test("Weekly insights separate current expenses, reviewed payments and earlier unchecked items")
+    func weeklyReconciliationInsights() throws {
+        let reference = makeDate(year: 2026, month: 10, day: 5)
+        let currentDate = makeDate(year: 2026, month: 10, day: 12)
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let usdExpense = BudgetItem(name: "Subscription", type: .expense, amount: 100, currencyCode: "USD",
+                                    frequency: .weekly, referenceDate: reference, category: .other)
+        let audExpense = BudgetItem(name: "Groceries", type: .expense, amount: 50,
+                                    frequency: .weekly, referenceDate: reference, category: .other)
+        let income = BudgetItem(name: "Salary", type: .income, amount: 1000,
+                                frequency: .weekly, referenceDate: reference, category: .income)
+        let saved = [
+            Occurrence(dueDate: reference, expectedAmount: 100, status: .confirmed, budgetItem: usdExpense),
+            Occurrence(dueDate: reference, expectedAmount: 50, status: .skipped, budgetItem: audExpense),
+            Occurrence(dueDate: currentDate, expectedAmount: 100, actualAmount: 80,
+                       status: .pending, budgetItem: usdExpense),
+            Occurrence(dueDate: currentDate, expectedAmount: 50, actualAmount: 45,
+                       status: .confirmed, budgetItem: audExpense),
+            Occurrence(dueDate: currentDate, expectedAmount: 1000, status: .skipped, budgetItem: income)
+        ]
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [usdExpense, audExpense, income], occurrences: saved,
+            anchor: .fixedDay(weekday: 2), range: .days14, holidays: [],
+            exchangeRates: ["USD": 1, "AUD": 1.5], baseCurrency: "AUD",
+            includingPreviousWeek: true, now: today
+        )
+        let olderPending = Occurrence(dueDate: makeDate(year: 2026, month: 9, day: 28),
+                                      expectedAmount: 50, status: .overdue, budgetItem: audExpense)
+        let summary = viewModel.reconciliationSummary(groups: groups, history: saved + [olderPending], now: today)
+        #expect(summary.remainingExpenses == 120)
+        #expect(summary.reviewedCount == 2)
+        #expect(summary.totalCount == 3)
+        #expect(summary.overdueCount == 3)
+        #expect(summary.weekLabel == groups[1].label)
+    }
+
+    @Test("Weekly progress retains reviewed irregular payments after rescheduling")
+    func reviewedIrregularPaymentHistory() {
+        let today = makeDate(year: 2026, month: 10, day: 17)
+        let paidDate = makeDate(year: 2026, month: 10, day: 13)
+        let expense = BudgetItem(name: "Irregular bill", type: .expense, amount: 100,
+                                 frequency: .irregular, referenceDate: makeDate(year: 2026, month: 11, day: 2),
+                                 category: .other)
+        let confirmed = Occurrence(dueDate: paidDate, expectedAmount: 100, status: .confirmed, budgetItem: expense)
+        let skipped = Occurrence(dueDate: makeDate(year: 2026, month: 10, day: 14),
+                                 expectedAmount: 100, status: .skipped, budgetItem: expense)
+        let previous = Occurrence(dueDate: makeDate(year: 2026, month: 10, day: 6),
+                                  expectedAmount: 100, status: .confirmed, budgetItem: expense)
+        let pendingExpense = BudgetItem(name: "Rescheduled pending bill", type: .expense, amount: 100,
+                                        currencyCode: "USD", frequency: .irregular,
+                                        referenceDate: makeDate(year: 2026, month: 11, day: 3), category: .other)
+        let pending = Occurrence(dueDate: makeDate(year: 2026, month: 10, day: 15),
+                                 expectedAmount: 100, actualAmount: 80, status: .overdue, budgetItem: pendingExpense)
+        let previousPending = Occurrence(dueDate: makeDate(year: 2026, month: 10, day: 7),
+                                         expectedAmount: 100, status: .pending, budgetItem: pendingExpense)
+        let future = Occurrence(dueDate: makeDate(year: 2026, month: 11, day: 3),
+                                expectedAmount: 100, status: .pending, budgetItem: pendingExpense)
+        let saved = [confirmed, skipped, previous, pending, previousPending, future]
+        let groups = viewModel.weeklyGroups(
+            budgetItems: [expense, pendingExpense], occurrences: saved,
+            anchor: .fixedDay(weekday: 2), range: .days14, holidays: [],
+            includingPreviousWeek: true, now: today
+        )
+        let summary = viewModel.reconciliationSummary(groups: groups, history: saved,
+                                                       exchangeRates: ["USD": 1, "AUD": 1.5], now: today)
+        #expect(summary.reviewedCount == 2)
+        #expect(summary.totalCount == 3)
+        #expect(summary.remainingExpenses == 120)
+        #expect(summary.overdueCount == 2)
+    }
+
+    @Test("Weekly insights handle an empty schedule")
+    func emptyWeeklyReconciliationInsights() {
+        let summary = viewModel.reconciliationSummary(groups: [])
+        #expect(summary.remainingExpenses == 0)
+        #expect(summary.reviewedCount == 0)
+        #expect(summary.totalCount == 0)
+        #expect(summary.overdueCount == 0)
+    }
+
     // MARK: - effectiveBalanceAmount Tests
 
     @Test("Pending item uses projected amount")

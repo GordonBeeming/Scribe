@@ -30,3 +30,7 @@ Scribe.xcodeproj/
 
 # XcodeBuildMCP local session defaults (machine-specific absolute paths)
 .xcodebuildmcp/
+
+# Python simulator helper caches
+__pycache__/
+*.pyc

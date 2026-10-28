@@ -1,22 +1,29 @@
 import SwiftUI
 
+private enum ScribeTab: String {
+    case dashboard
+    case items
+    case settings
+}
+
 struct ContentView: View {
+    @SceneStorage(ScribeApp.usesUITestFixture ? "ui-test.selectedTab" : "selectedTab") private var selectedTab: ScribeTab = .dashboard
+
     var body: some View {
-        TabView {
-            Tab("Dashboard", systemImage: "house") {
+        TabView(selection: $selectedTab) {
+            Tab("Dashboard", systemImage: "house", value: ScribeTab.dashboard) {
                 DashboardView()
             }
 
-            Tab("Items", systemImage: "list.bullet") {
+            Tab("Items", systemImage: "list.bullet", value: ScribeTab.items) {
                 BudgetItemListView()
             }
 
-            Tab("Settings", systemImage: "gearshape") {
+            Tab("Settings", systemImage: "gearshape", value: ScribeTab.settings) {
                 SettingsView()
             }
         }
-        // Adaptive: compact iPhone tab bar, iPad/large sidebar.
-        .tabViewStyle(.sidebarAdaptable)
+        .tabViewStyle(.tabBarOnly)
         .tint(ScribeTheme.primary)
     }
 }

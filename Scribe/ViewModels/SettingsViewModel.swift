@@ -65,7 +65,16 @@ enum LookbackDays: Int, CaseIterable, Identifiable {
 
 @Observable
 final class SettingsViewModel {
-    nonisolated(unsafe) private static let defaults = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)
+    nonisolated(unsafe) private static let defaults: UserDefaults? = {
+        let suite = AppRuntime.usesUITestFixture
+            ? "com.gordonbeeming.scribe.ui-testing"
+            : SharedModelContainer.appGroupIdentifier
+        let defaults = UserDefaults(suiteName: suite)
+        if AppRuntime.usesUITestFixture {
+            defaults?.removePersistentDomain(forName: suite)
+        }
+        return defaults
+    }()
 
     private var modelContext: ModelContext?
 
@@ -217,18 +226,18 @@ final class SettingsViewModel {
     }
 
     static func currentDefaultRange() -> DefaultRange {
-        let raw = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.string(forKey: "defaultRange") ?? DefaultRange.days14.rawValue
+        let raw = Self.defaults?.string(forKey: "defaultRange") ?? DefaultRange.days14.rawValue
         return DefaultRange(rawValue: raw) ?? .days14
     }
 
     static func currentRollingWeeklyNet() -> Bool {
-        UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.bool(forKey: "rollingWeeklyNet") ?? false
+        Self.defaults?.bool(forKey: "rollingWeeklyNet") ?? false
     }
 
     static func currentLookbackDays() -> Int {
-        let raw = UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.integer(forKey: "lookbackDays")
+        let raw = Self.defaults?.integer(forKey: "lookbackDays")
         // UserDefaults returns 0 for missing keys, so check if key exists
-        if UserDefaults(suiteName: SharedModelContainer.appGroupIdentifier)?.object(forKey: "lookbackDays") == nil {
+        if Self.defaults?.object(forKey: "lookbackDays") == nil {
             return 5
         }
         return raw ?? 5

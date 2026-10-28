@@ -38,6 +38,7 @@ struct BudgetItemListView: View {
                                         NavigationLink(value: item) {
                                             BudgetItemRowView(item: item)
                                         }
+                                        .accessibilityIdentifier("budget-item.\(item.id.uuidString)")
                                         .listRowBackground(ScribeTheme.surface.opacity(0.55))
                                         .swipeActions(edge: .trailing) {
                                             Button(role: .destructive) {
@@ -102,6 +103,7 @@ struct BudgetItemListView: View {
                     } label: {
                         Image(systemName: "plus")
                     }
+                    .accessibilityIdentifier("items.add")
                 }
             }
             .sheet(isPresented: $showingAddSheet) {
