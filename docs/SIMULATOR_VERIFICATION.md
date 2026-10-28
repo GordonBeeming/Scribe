@@ -73,8 +73,10 @@ for wide-layout coverage.
 Screenshots are attached to the `.xcresult` bundle.
 Run UI-test invocations serially on the Mac. The screenshot-capture case is
 excluded from CI and skips before app launch by default. It is enabled only
-by the explicit capture helper below. CI also limits execution to one simulator
-destination at a time; disabling parallel tests alone does not serialize destinations.
+by the explicit capture helper below. CI runs each destination in a separate `xcodebuild` invocation and shuts down
+unused simulators on its dedicated runner before each suite. A single invocation
+with multiple runtimes can stall between destinations even when concurrency is one.
+On a shared development Mac, shut down only the disposable simulator you own.
 
 ### Direct inspection and targeted actions
 

@@ -58,6 +58,7 @@ jobs:
 
       - name: Run unit tests (iPhone)
         run: |
+          xcrun simctl shutdown all
           xcodebuild test-without-building \
             -project Scribe.xcodeproj \
             -scheme Scribe \
@@ -68,6 +69,7 @@ jobs:
 
       - name: Run unit tests (iPad)
         run: |
+          xcrun simctl shutdown all
           xcodebuild test-without-building \
             -project Scribe.xcodeproj \
             -scheme Scribe \
@@ -78,6 +80,7 @@ jobs:
 
       - name: Run unit tests (iPhone Duo)
         run: |
+          xcrun simctl shutdown all
           xcodebuild test-without-building \
             -project Scribe.xcodeproj \
             -scheme Scribe \
@@ -86,16 +89,27 @@ jobs:
             -parallel-testing-enabled NO \
             -quiet
 
-      - name: Verify navigation/forms and wide iPad insights
+      - name: Verify iPad navigation, forms, and insights
         run: |
+          xcrun simctl shutdown all
           xcodebuild test-without-building \
             -project Scribe.xcodeproj \
             -scheme Scribe \
             -destination 'platform=iOS Simulator,name=iPad Air 13-inch (M4),OS=27.0' \
+            -only-testing:ScribeUITests \
+            -skip-testing:ScribeUITests/ScribeNavigationTests/testCaptureAppStoreScreenshots \
+            -parallel-testing-enabled NO \
+            -quiet
+
+      - name: Verify Duo navigation, forms, and insights
+        run: |
+          xcrun simctl shutdown all
+          xcodebuild test-without-building \
+            -project Scribe.xcodeproj \
+            -scheme Scribe \
             -destination 'platform=iOS Simulator,name=iPhone Duo,OS=27.1' \
             -only-testing:ScribeUITests \
             -skip-testing:ScribeUITests/ScribeNavigationTests/testCaptureAppStoreScreenshots \
-            -maximum-concurrent-test-simulator-destinations 1 \
             -parallel-testing-enabled NO \
             -quiet
 
