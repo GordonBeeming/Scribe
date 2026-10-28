@@ -119,35 +119,46 @@ final class DashboardViewModel {
         let overdueCount: Int
     }
 
-    func reconciliationSummary(groups: [WeekGroup], history: [Occurrence] = [], holidays: Set<Date> = [], now: Date = Date()) -> ReconciliationSummary {
+    func reconciliationSummary(
+        groups: [WeekGroup], history: [Occurrence] = [], holidays: Set<Date> = [],
+        exchangeRates: [String: Double] = [:], baseCurrency: String = "AUD", now: Date = Date()
+    ) -> ReconciliationSummary {
         let today = Calendar.current.startOfDay(for: now)
         let current = groups.first { $0.startDate <= today && $0.endDate >= today }
         let reviewed = current?.items.filter { $0.isConfirmed || $0.isSkipped }.count ?? 0
         let displayedItems = groups.flatMap(\.items)
         let displayedOccurrenceIDs = Set(displayedItems.compactMap { $0.occurrence?.id })
-        let additionalReviewed = history.filter { occurrence in
-            guard let current, !displayedOccurrenceIDs.contains(occurrence.id),
-                  occurrence.status == .confirmed || occurrence.status == .skipped,
-                  let item = occurrence.budgetItem, item.isActive else { return false }
-            let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: occurrence.dueDate, holidays: holidays)
-            return displayDate >= current.startDate && displayDate <= current.endDate
-        }.count
-        let firstDisplayedDay = groups.map(\.startDate).min() ?? today
-        let olderPending = history.filter { occurrence in
+        let additionalHistory = history.compactMap { occurrence -> (occurrence: Occurrence, item: BudgetItem, date: Date)? in
             guard !displayedOccurrenceIDs.contains(occurrence.id),
-                  occurrence.status != .confirmed, occurrence.status != .skipped,
-                  let item = occurrence.budgetItem, item.isActive else { return false }
-            let displayDate = DateCalculator.budgetDisplayDate(for: item, scheduledDate: occurrence.dueDate, holidays: holidays)
-            return displayDate < min(today, firstDisplayedDay)
+                  let item = occurrence.budgetItem, item.isActive else { return nil }
+            return (occurrence, item, DateCalculator.budgetDisplayDate(
+                for: item, scheduledDate: occurrence.dueDate, holidays: holidays
+            ))
+        }
+        let additionalCurrent = additionalHistory.filter { entry in
+            guard let current else { return false }
+            return entry.date >= current.startDate && entry.date <= current.endDate
+        }
+        let additionalReviewed = additionalCurrent.filter {
+            $0.occurrence.status == .confirmed || $0.occurrence.status == .skipped
         }.count
-        let overdue = olderPending + displayedItems.filter {
+        let additionalExpenses = additionalCurrent.reduce(Decimal.zero) { total, entry in
+            guard entry.item.type == .expense,
+                  entry.occurrence.status != .confirmed, entry.occurrence.status != .skipped else { return total }
+            return total + toBase(entry.occurrence.actualAmount ?? entry.occurrence.expectedAmount,
+                                  from: entry.item.currencyCode, rates: exchangeRates, base: baseCurrency)
+        }
+        let additionalOverdue = additionalHistory.filter {
+            $0.date < today && $0.occurrence.status != .confirmed && $0.occurrence.status != .skipped
+        }.count
+        let overdue = additionalOverdue + displayedItems.filter {
             $0.dueDate < today && !$0.isConfirmed && !$0.isSkipped
         }.count
         return ReconciliationSummary(
             weekLabel: current?.label ?? "This week",
-            remainingExpenses: current?.pendingExpenses ?? 0,
+            remainingExpenses: (current?.pendingExpenses ?? 0) + additionalExpenses,
             reviewedCount: reviewed + additionalReviewed,
-            totalCount: (current?.totalCount ?? 0) + additionalReviewed,
+            totalCount: (current?.totalCount ?? 0) + additionalCurrent.count,
             overdueCount: overdue
         )
     }
@@ -333,7 +344,7 @@ final class DashboardViewModel {
 
             let pendingExpenses = pg.items
                 .filter { $0.budgetItem.type == .expense && !$0.isConfirmed && !$0.isSkipped }
-                .reduce(Decimal.zero) { $0 + toBase($1.amount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
+                .reduce(Decimal.zero) { $0 + toBase($1.occurrence?.actualAmount ?? $1.amount, from: $1.budgetItem.currencyCode, rates: exchangeRates, base: baseCurrency) }
 
             let label = "\(formatter.string(from: pg.start)) – \(formatter.string(from: pg.end))"
 
